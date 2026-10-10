@@ -1,0 +1,7 @@
+### Feed atual da apuração (spec: election-results-feed FR-07)
+GET http://localhost:3433/election-feed
+Accept: application/json
+
+### Stream SSE (o REST Client mostra só o início do stream)
+GET http://localhost:3433/election-feed/stream
+Accept: text/event-stream

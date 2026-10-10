@@ -16,3 +16,117 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// ---------------------------------------------------------------------------------------------
+// election-results-feed (FR-05): histórico append-only dos arquivos EA20 aceitos do TSE, eventos
+// de apuração e estado durável do worker.
+// ---------------------------------------------------------------------------------------------
+
+/// Resultado aceito de um escopo (br ou UF). Nunca apagado nem reescrito.
+model ScopeResult {
+  id                 Int               @id @default(autoincrement())
+  electionCode       String            @map("election_code")
+  scope              String
+  round              Int
+  phase              String
+  generationId       String            @map("generation_id")
+  generatedAt        DateTime          @map("generated_at") @db.Timestamptz(3)
+  totalizedAt        DateTime?         @map("totalized_at") @db.Timestamptz(3)
+  disclosable        Boolean
+  progress           String
+  final              Boolean
+  noWinnerAssigned   Boolean           @map("no_winner_assigned")
+  sectionsTotal      Int               @map("sections_total")
+  sectionsCounted    Int               @map("sections_counted")
+  countedSectionsPct Decimal           @map("counted_sections_pct") @db.Decimal(12, 9)
+  electorate         Int
+  validVotes         Int               @map("valid_votes")
+  contentHash        String            @map("content_hash")
+  etag               String?
+  rawPayload         Json              @map("raw_payload")
+  receivedAt         DateTime          @map("received_at") @db.Timestamptz(3)
+  candidates         CandidateResult[]
+
+  @@unique([electionCode, scope, generationId])
+  @@index([electionCode, scope, id])
+  @@map("scope_result")
+}
+
+/// Candidato de um ScopeResult.
+model CandidateResult {
+  id            Int         @id @default(autoincrement())
+  scopeResultId Int         @map("scope_result_id")
+  scopeResult   ScopeResult @relation(fields: [scopeResultId], references: [id], onDelete: Restrict)
+  number        Int
+  sqcand        String
+  ballotName    String      @map("ballot_name")
+  party         String
+  votes         Int
+  validVotesPct Decimal     @map("valid_votes_pct") @db.Decimal(12, 9)
+  elected       Boolean
+  situation     String?
+
+  @@index([scopeResultId])
+  @@map("candidate_result")
+}
+
+/// Estado do worker por escopo (R-3, R-7, R-11).
+model ScopeSourceState {
+  electionCode    String    @map("election_code")
+  scope           String
+  lastGeneratedAt DateTime? @map("last_generated_at") @db.Timestamptz(3)
+  lastEtag        String?   @map("last_etag")
+  lastSeenAt      DateTime? @map("last_seen_at") @db.Timestamptz(3)
+  notFoundUntil   DateTime? @map("not_found_until") @db.Timestamptz(3)
+
+  @@id([electionCode, scope])
+  @@map("scope_source_state")
+}
+
+/// Evento de apuração (R-9), deduplicado por chave.
+model ElectionEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  seq          Int      @default(autoincrement())
+  electionCode String   @map("election_code")
+  kind         String
+  dedupeKey    String   @map("dedupe_key")
+  occurredAt   DateTime @map("occurred_at") @db.Timestamptz(3)
+  text         String
+  side         String
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([electionCode, dedupeKey])
+  @@index([electionCode, occurredAt(sort: Desc), seq(sort: Desc)])
+  @@map("election_event")
+}
+
+/// Evento de combate (combat-events R-1…R-6): golpe já decidido, deduplicado pela chave do
+/// evento de apuração de origem.
+model CombatEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  seq          Int      @default(autoincrement())
+  electionCode String   @map("election_code")
+  cause        String
+  dedupeKey    String   @map("dedupe_key")
+  red          String
+  blue         String
+  occurredAt   DateTime @map("occurred_at") @db.Timestamptz(3)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@unique([electionCode, dedupeKey])
+  @@index([electionCode, seq(sort: Desc)])
+  @@map("combat_event")
+}
+
+/// Saúde da fonte e versão do feed, uma linha por eleição (R-10, R-11).
+model SourceStatus {
+  electionCode  String    @id @map("election_code")
+  lastAttemptAt DateTime? @map("last_attempt_at") @db.Timestamptz(3)
+  lastSuccessAt DateTime? @map("last_success_at") @db.Timestamptz(3)
+  lastError     String?   @map("last_error")
+  blockedUntil  DateTime? @map("blocked_until") @db.Timestamptz(3)
+  feedVersion   Int       @default(0) @map("feed_version")
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("source_status")
+}

@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 
 /**
@@ -8,10 +8,9 @@ import { PrismaClient } from '@prisma/client';
  * Spec: /specs/backend-bootstrap (FR-02, FR-06).
  */
 @Injectable()
-export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
-  async onModuleInit(): Promise<void> {
-    await this.$connect();
-  }
+export class PrismaService extends PrismaClient implements OnModuleDestroy {
+  // Sem `$connect()` no init: o Prisma conecta na primeira consulta, então o processo sobe e o
+  // `/ping` responde mesmo com o Postgres fora do ar (backend-bootstrap, casos de borda).
 
   async onModuleDestroy(): Promise<void> {
     await this.$disconnect();
