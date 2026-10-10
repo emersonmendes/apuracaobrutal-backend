@@ -1,0 +1,18 @@
+// apuracaobrutal-backend — schema Prisma.
+// Fonte da verdade da estrutura do banco. Toda mudança estrutural passa pelo Prisma Migrate
+// (nunca SQL cru / `db push` em ambientes compartilhados).
+//
+// Este baseline NÃO declara modelos de propósito (spec: backend-bootstrap R-8): cada spec de
+// feature adiciona seus modelos aqui e gera uma migration via `make migrate name=<mudança>`.
+//
+// Nomes físicos em snake_case, sem aspas: todo modelo com @@map, todo campo de várias palavras
+// com @map, todo enum com @@map (ai/conventions.md#nomes-no-banco-de-dados).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}

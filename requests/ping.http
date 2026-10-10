@@ -1,0 +1,5 @@
+### Health check — verifica se o backend está no ar (spec: backend-bootstrap FR-07)
+# Alternativa: abrir a Swagger UI em http://localhost:3433/docs (só desenvolvimento).
+# Use com o "REST Client" do VS Code ou o HTTP Client do JetBrains.
+GET http://localhost:3433/ping
+Accept: text/plain
