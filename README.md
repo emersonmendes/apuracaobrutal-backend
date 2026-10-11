@@ -25,6 +25,7 @@ npm install
 | `NODE_ENV` | `development` | Fora de `production`, monta o Swagger em `/docs` |
 | `PORT` | `3433` | Porta HTTP |
 | `DATABASE_URL` | — | Conexão do PostgreSQL |
+| `TRUST_PROXY` | `0` | Nº exato de proxies reversos à frente do backend (0–10); `1` atrás do ALB, para `req.ip` ser o cliente real |
 | `CORS_ORIGINS` | `http://localhost:3100` | Origens do navegador aceitas, separadas por vírgula (`*` é ignorado) |
 | `TSE_*`, `ELECTION_*`, `SOURCE_STALE_AFTER_SECONDS`, `FEED_REFRESH_MS`, `SSE_MAX_CLIENTS` | ver `.env.example` | Eleição acompanhada e feed ([spec election-results-feed FR-01](../specs/election-results-feed/spec.md)) |
 | `PAYMENT_GATEWAY`, `SPONSORSHIP_*`, `ASAAS_*` | ver `.env.example` | Patrocínios e pagamento ([sponsorships FR-01](../specs/sponsorships/spec.md), [asaas-payment FR-01](../specs/asaas-payment/spec.md)) |
