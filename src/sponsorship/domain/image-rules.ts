@@ -1,4 +1,5 @@
-/** Regras da imagem enviada (spec sponsorships R-7). */
+/** Regras da imagem enviada (spec sponsorships R-7; sponsorship-image-moderation R-6). */
+import { createHash } from 'node:crypto';
 export type ImageFormat = 'png' | 'jpeg' | 'webp';
 
 export const MIN_SIDE_PX = 64;
@@ -20,6 +21,11 @@ export function detectImageFormat(bytes: Uint8Array): ImageFormat | null {
   if (startsWith(bytes, JPEG)) return 'jpeg';
   if (startsWith(bytes, ascii('RIFF')) && startsWith(bytes, ascii('WEBP'), 8)) return 'webp';
   return null;
+}
+
+/** SHA-256 em hex: identidade da imagem analisada e publicada (sponsorship-image-moderation R-6). */
+export function sha256Hex(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 /** Dimensões decodificadas dentro de 64…4096 px em cada lado. */

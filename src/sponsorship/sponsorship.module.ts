@@ -3,9 +3,13 @@ import { MulterModule } from '@nestjs/platform-express';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { PrismaModule } from '../prisma/prisma.module';
 import { PrismaService } from '../prisma/prisma.service';
+import { Logger } from '@nestjs/common';
 import { ConfirmPayment } from './application/confirm-payment';
 import { CreateSponsorship } from './application/create-sponsorship';
 import { GetOffer } from './application/get-offer';
+import { GetPaymentInstructions } from './application/get-payment-instructions';
+import { HandleAsaasWebhook } from './application/handle-asaas-webhook';
+import { ReconcilePendingPayment } from './application/reconcile-pending-payment';
 import { GetSchedule } from './application/get-schedule';
 import { GetSponsorship } from './application/get-sponsorship';
 import { ReadSponsorImage } from './application/read-sponsor-image';
@@ -21,6 +25,7 @@ import {
   SPONSORSHIP_REPOSITORY,
   type SponsorshipRepository,
 } from './domain/ports/sponsorship-repository';
+import { AsaasPaymentGateway } from './infra/adapters/asaas-payment-gateway';
 import { LocalDiskImageStorage } from './infra/adapters/local-disk-image-storage';
 import { PrismaSponsorshipRepository } from './infra/adapters/prisma-sponsorship-repository';
 import { SharpImageProcessor } from './infra/adapters/sharp-image-processor';
@@ -29,6 +34,7 @@ import {
   SPONSORSHIP_CONFIG,
   parseSponsorshipConfig,
 } from './infra/config/sponsorship-config.factory';
+import { AsaasWebhookController } from './infra/http/asaas-webhook.controller';
 import { SponsorshipsController } from './infra/http/sponsorships.controller';
 
 const HOUR_MS = 60 * 60_000;
@@ -45,6 +51,15 @@ export const SPONSORSHIP_CORE_PROVIDERS = [
   {
     provide: SPONSOR_IMAGE_STORAGE,
     useFactory: (config: SponsorshipConfig) => new LocalDiskImageStorage(config.storageDir),
+    inject: [SPONSORSHIP_CONFIG],
+  },
+  // Adapter da porta de cobrança conforme PAYMENT_GATEWAY (sponsorships R-9; asaas-payment R-1).
+  {
+    provide: PAYMENT_GATEWAY,
+    useFactory: (config: SponsorshipConfig): PaymentGateway =>
+      config.gateway === 'asaas' && config.asaas
+        ? new AsaasPaymentGateway(config.asaas)
+        : new SimulatedPaymentGateway(),
     inject: [SPONSORSHIP_CONFIG],
   },
 ];
@@ -72,10 +87,9 @@ export const SPONSORSHIP_CORE_PROVIDERS = [
       }),
     }),
   ],
-  controllers: [SponsorshipsController],
+  controllers: [SponsorshipsController, AsaasWebhookController],
   providers: [
     ...SPONSORSHIP_CORE_PROVIDERS,
-    { provide: PAYMENT_GATEWAY, useFactory: () => new SimulatedPaymentGateway() },
     { provide: IMAGE_PROCESSOR, useFactory: () => new SharpImageProcessor() },
     {
       provide: GetOffer,
@@ -109,9 +123,41 @@ export const SPONSORSHIP_CORE_PROVIDERS = [
       inject: [SPONSORSHIP_REPOSITORY, SPONSORSHIP_CLOCK, SPONSORSHIP_CONFIG],
     },
     {
+      provide: ReconcilePendingPayment,
+      useFactory: (
+        r: SponsorshipRepository,
+        g: PaymentGateway,
+        confirm: ConfirmPayment,
+        c: Clock,
+      ) => new ReconcilePendingPayment(r, g, confirm, c, new Logger('PaymentReconcile')),
+      inject: [SPONSORSHIP_REPOSITORY, PAYMENT_GATEWAY, ConfirmPayment, SPONSORSHIP_CLOCK],
+    },
+    {
       provide: GetSponsorship,
-      useFactory: (r: SponsorshipRepository, c: Clock) => new GetSponsorship(r, c),
-      inject: [SPONSORSHIP_REPOSITORY, SPONSORSHIP_CLOCK],
+      useFactory: (
+        r: SponsorshipRepository,
+        c: Clock,
+        cfg: SponsorshipConfig,
+        reconcile: ReconcilePendingPayment,
+      ) => new GetSponsorship(r, c, cfg, reconcile),
+      inject: [
+        SPONSORSHIP_REPOSITORY,
+        SPONSORSHIP_CLOCK,
+        SPONSORSHIP_CONFIG,
+        ReconcilePendingPayment,
+      ],
+    },
+    {
+      provide: GetPaymentInstructions,
+      useFactory: (r: SponsorshipRepository, g: PaymentGateway, c: Clock, cfg: SponsorshipConfig) =>
+        new GetPaymentInstructions(r, g, c, cfg),
+      inject: [SPONSORSHIP_REPOSITORY, PAYMENT_GATEWAY, SPONSORSHIP_CLOCK, SPONSORSHIP_CONFIG],
+    },
+    {
+      provide: HandleAsaasWebhook,
+      useFactory: (r: SponsorshipRepository, confirm: ConfirmPayment, c: Clock) =>
+        new HandleAsaasWebhook(r, confirm, c),
+      inject: [SPONSORSHIP_REPOSITORY, ConfirmPayment, SPONSORSHIP_CLOCK],
     },
     {
       provide: GetSchedule,
@@ -120,7 +166,8 @@ export const SPONSORSHIP_CORE_PROVIDERS = [
     },
     {
       provide: ReadSponsorImage,
-      useFactory: (r: SponsorshipRepository, s: SponsorImageStorage) => new ReadSponsorImage(r, s),
+      useFactory: (r: SponsorshipRepository, s: SponsorImageStorage) =>
+        new ReadSponsorImage(r, s, new Logger('SponsorImage')),
       inject: [SPONSORSHIP_REPOSITORY, SPONSOR_IMAGE_STORAGE],
     },
   ],

@@ -1,3 +1,6 @@
+import type { ModerationCategory } from '../../moderation/domain/categories';
+import type { ModerationState } from './moderation-state';
+import type { ExpiryReason, PaymentMethod, RefundState } from './payment';
 import { priceTierOf, type PriceTier, type Quote } from './pricing';
 import type { ElectionDay } from './sponsorship-config';
 import type { SponsorshipSlot } from './slots';
@@ -14,10 +17,29 @@ export interface Sponsorship {
   amountCents: number;
   advertiserName: string;
   email: string;
+  /** Só dígitos (asaas-payment R-2); `null` em pedidos anteriores à cobrança real. */
+  cpfCnpj: string | null;
   imageKey: string | null;
+  /** SHA-256 (hex) do WebP gravado: a imagem analisada é a publicada (sponsorship-image-moderation R-6). */
+  imageSha256: string | null;
   status: SponsorshipStatus;
+  /** Moderação automática (sponsorship-image-moderation R-2). Independente de `status`. */
+  moderation: ModerationState;
+  moderationAttempts: number;
+  moderationNextAttemptAt: Date | null;
+  moderationClaimedUntil: Date | null;
+  moderatedAt: Date | null;
+  moderationCategories: ModerationCategory[];
   paymentGateway: string;
   chargeId: string;
+  gatewayCustomerId: string | null;
+  invoiceUrl: string | null;
+  paymentMethod: PaymentMethod | null;
+  paidAt: Date | null;
+  refund: RefundState;
+  refundAttempts: number;
+  refundedAt: Date | null;
+  expiryReason: ExpiryReason | null;
   createdAt: Date;
   paymentExpiresAt: Date;
   confirmedAt: Date | null;
@@ -33,8 +55,11 @@ export function newPendingOrder(args: {
   input: OrderInput;
   quote: Quote;
   imageKey: string;
+  imageSha256: string;
   gateway: string;
   chargeId: string;
+  gatewayCustomerId?: string | null;
+  invoiceUrl?: string | null;
   now: Date;
   paymentTtlMinutes: number;
 }): Sponsorship {
@@ -47,10 +72,26 @@ export function newPendingOrder(args: {
     amountCents: args.quote.amountCents,
     advertiserName: args.input.advertiserName,
     email: args.input.email,
+    cpfCnpj: args.input.cpfCnpj,
     imageKey: args.imageKey,
+    imageSha256: args.imageSha256,
     status: 'pending_payment',
+    moderation: 'pending',
+    moderationAttempts: 0,
+    moderationNextAttemptAt: args.now,
+    moderationClaimedUntil: null,
+    moderatedAt: null,
+    moderationCategories: [],
     paymentGateway: args.gateway,
     chargeId: args.chargeId,
+    gatewayCustomerId: args.gatewayCustomerId ?? null,
+    invoiceUrl: args.invoiceUrl ?? null,
+    paymentMethod: null,
+    paidAt: null,
+    refund: 'none',
+    refundAttempts: 0,
+    refundedAt: null,
+    expiryReason: null,
     createdAt: args.now,
     paymentExpiresAt: new Date(args.now.getTime() + args.paymentTtlMinutes * MINUTE_MS),
     confirmedAt: null,

@@ -1,5 +1,13 @@
-import type { Prisma, Sponsorship as SponsorshipRow } from '@prisma/client';
+import { Prisma, type Sponsorship as SponsorshipRow } from '@prisma/client';
+import { isModerationCategory } from '../../../moderation/domain/categories';
 import type { PrismaService } from '../../../prisma/prisma.service';
+import { moderationExpiryReason, type ModerationWrites } from '../../domain/moderation-state';
+import {
+  expiryWrites,
+  scheduleWrites,
+  type ReceivedPayment,
+  type RefundState,
+} from '../../domain/payment';
 import {
   confirmationTierMatches,
   paymentExpired,
@@ -10,27 +18,50 @@ import type { ElectionDay } from '../../domain/sponsorship-config';
 import type { SponsorshipSlot } from '../../domain/slots';
 import type {
   ConfirmOutcome,
+  ExpiredOrder,
+  ModerationRecordInput,
+  PaymentWebhookOutcome,
   ScheduleItem,
   SponsorshipRepository,
+  WebhookEventRecord,
 } from '../../domain/ports/sponsorship-repository';
 
-const toDomain = (row: SponsorshipRow): Sponsorship => ({ ...row });
+const toDomain = (row: SponsorshipRow): Sponsorship => ({
+  ...row,
+  moderationCategories: row.moderationCategories.filter(isModerationCategory),
+});
 
-/** Persistência dos pedidos de patrocínio no Postgres (spec sponsorships FR-02, R-9). */
+/**
+ * Persistência dos pedidos de patrocínio no Postgres (spec sponsorships FR-02, R-9; asaas-payment
+ * FR-02, R-5–R-7). Uma instância pode estar ligada a uma transação aberta (`tx`): é assim que o
+ * evento de webhook e os seus efeitos ficam na mesma transação (R-6).
+ */
 export class PrismaSponsorshipRepository implements SponsorshipRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tx: Prisma.TransactionClient | null = null,
+  ) {}
+
+  private get db(): Prisma.TransactionClient {
+    return this.tx ?? this.prisma;
+  }
+
+  /** Reusa a transação aberta, se houver; senão abre uma. */
+  private transaction<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return this.tx ? fn(this.tx) : this.prisma.$transaction(fn);
+  }
 
   async create(sponsorship: Sponsorship): Promise<void> {
-    await this.prisma.sponsorship.create({ data: sponsorship });
+    await this.db.sponsorship.create({ data: sponsorship });
   }
 
   async findById(id: string): Promise<Sponsorship | null> {
-    const row = await this.prisma.sponsorship.findUnique({ where: { id } });
+    const row = await this.db.sponsorship.findUnique({ where: { id } });
     return row ? toDomain(row) : null;
   }
 
   async queueEnds(): Promise<Partial<Record<SponsorshipSlot, Date>>> {
-    const groups = await this.prisma.sponsorship.groupBy({
+    const groups = await this.db.sponsorship.groupBy({
       by: ['slot'],
       where: { status: 'scheduled' },
       _max: { endsAt: true },
@@ -43,10 +74,16 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
   /**
    * Uma transação (R-9): trava o pedido; idempotente se já `scheduled`; vencido vira `expired`;
    * senão serializa o local com um advisory lock de transação, lê o fim da fila e agenda (R-5) —
-   * ou, se a faixa de preço mudou, expira sem agendar (sponsorship-election-pricing R-5).
+   * ou, se a faixa de preço mudou, expira sem agendar (sponsorship-election-pricing R-5). O que é
+   * gravado em cada desfecho vem do domínio (`scheduleWrites`/`expiryWrites`, asaas-payment R-5).
    */
-  async confirm(id: string, now: Date, electionDay: ElectionDay): Promise<ConfirmOutcome> {
-    return this.prisma.$transaction(async (tx) => {
+  async confirm(
+    id: string,
+    now: Date,
+    electionDay: ElectionDay,
+    received?: ReceivedPayment,
+  ): Promise<ConfirmOutcome> {
+    return this.transaction(async (tx) => {
       const locked = await tx.$queryRaw<{ id: string }[]>`
         SELECT id FROM sponsorship WHERE id = ${id}::uuid FOR UPDATE`;
       if (locked.length === 0) return { kind: 'not_found' } as const;
@@ -55,9 +92,18 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
       if (row.status === 'scheduled') {
         return { kind: 'scheduled', sponsorship: toDomain(row) } as const;
       }
+      // Gate de moderação (sponsorship-image-moderation R-7): simulado → nada gravado; pagamento
+      // real → expira com estorno.
+      if (row.moderation !== 'approved') {
+        if (!received) return { kind: 'not_approved', moderation: row.moderation } as const;
+        const writes = expiryWrites(row, moderationExpiryReason(row), received, now);
+        await tx.sponsorship.update({ where: { id }, data: writes });
+        return { kind: 'expired', refundRequested: writes.refund !== 'none' } as const;
+      }
       if (row.status === 'expired' || paymentExpired(row, now)) {
-        await tx.sponsorship.update({ where: { id }, data: { status: 'expired' } });
-        return { kind: 'expired' } as const;
+        const writes = expiryWrites(row, 'payment_timeout', received, now);
+        await tx.sponsorship.update({ where: { id }, data: writes });
+        return { kind: 'expired', refundRequested: writes.refund !== 'none' } as const;
       }
 
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`sponsorship:${row.slot}`}))`;
@@ -67,20 +113,27 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
       });
       const window = schedule(now, row.minutes, queue._max.endsAt);
       if (!confirmationTierMatches(row, window, electionDay)) {
-        await tx.sponsorship.update({ where: { id }, data: { status: 'expired' } });
-        return { kind: 'price_changed' } as const;
+        const writes = expiryWrites(row, 'price_changed', received, now);
+        await tx.sponsorship.update({ where: { id }, data: writes });
+        return { kind: 'price_changed', refundRequested: writes.refund !== 'none' } as const;
       }
       const updated = await tx.sponsorship.update({
         where: { id },
-        data: { status: 'scheduled', confirmedAt: now, ...window },
+        data: scheduleWrites(window, received, now),
       });
       return { kind: 'scheduled', sponsorship: toDomain(updated) } as const;
     });
   }
 
   async scheduleWindow(from: Date, to: Date): Promise<ScheduleItem[]> {
-    const rows = await this.prisma.sponsorship.findMany({
-      where: { status: 'scheduled', endsAt: { gt: from }, startsAt: { lt: to } },
+    const rows = await this.db.sponsorship.findMany({
+      where: {
+        status: 'scheduled',
+        moderation: 'approved',
+        imageKey: { not: null },
+        endsAt: { gt: from },
+        startsAt: { lt: to },
+      },
       orderBy: { startsAt: 'asc' },
       select: { id: true, slot: true, startsAt: true, endsAt: true },
     });
@@ -92,23 +145,26 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
     }));
   }
 
-  async expirePending(now: Date): Promise<{ id: string; imageKey: string }[]> {
+  async expirePending(now: Date): Promise<ExpiredOrder[]> {
     const where: Prisma.SponsorshipWhereInput = {
       status: 'pending_payment',
       paymentExpiresAt: { lte: now },
     };
-    return this.prisma.$transaction(async (tx) => {
-      const rows = await tx.sponsorship.findMany({ where, select: { id: true, imageKey: true } });
+    return this.transaction(async (tx) => {
+      const rows = await tx.sponsorship.findMany({
+        where,
+        select: { id: true, imageKey: true, paymentGateway: true, chargeId: true },
+      });
       await tx.sponsorship.updateMany({
         where: { ...where, id: { in: rows.map((row) => row.id) } },
-        data: { status: 'expired' },
+        data: { status: 'expired', expiryReason: 'payment_timeout' },
       });
-      return rows.flatMap((row) => (row.imageKey ? [{ id: row.id, imageKey: row.imageKey }] : []));
+      return rows;
     });
   }
 
   async endedWithImage(before: Date): Promise<{ id: string; imageKey: string }[]> {
-    const rows = await this.prisma.sponsorship.findMany({
+    const rows = await this.db.sponsorship.findMany({
       where: { status: 'scheduled', endsAt: { lte: before }, imageKey: { not: null } },
       select: { id: true, imageKey: true },
     });
@@ -116,6 +172,132 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
   }
 
   async clearImage(id: string): Promise<void> {
-    await this.prisma.sponsorship.update({ where: { id }, data: { imageKey: null } });
+    await this.db.sponsorship.update({ where: { id }, data: { imageKey: null } });
+  }
+
+  /**
+   * Evento + efeito na mesma transação (asaas-payment R-6). O `id` do evento é chave primária:
+   * repetido → `duplicate` sem reaplicar; dois envios simultâneos do mesmo evento → o segundo
+   * falha na chave e também vira `duplicate` (a transação dele é desfeita).
+   */
+  async recordWebhookEvent(
+    event: WebhookEventRecord,
+    apply: (repository: SponsorshipRepository) => Promise<PaymentWebhookOutcome>,
+  ): Promise<PaymentWebhookOutcome | 'duplicate'> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const existing = await tx.paymentWebhookEvent.findUnique({
+          where: { id: event.id },
+          select: { id: true },
+        });
+        if (existing) return 'duplicate' as const;
+        const outcome = await apply(new PrismaSponsorshipRepository(this.prisma, tx));
+        await tx.paymentWebhookEvent.create({
+          data: {
+            id: event.id,
+            gateway: event.gateway,
+            event: event.event,
+            chargeId: event.chargeId,
+            sponsorshipId: event.sponsorshipId,
+            receivedAt: event.receivedAt,
+            outcome,
+            payload: (event.payload ?? null) as Prisma.InputJsonValue,
+          },
+        });
+        return outcome;
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        return 'duplicate';
+      }
+      throw error;
+    }
+  }
+
+  async refundsRequested(limit: number): Promise<Sponsorship[]> {
+    const rows = await this.db.sponsorship.findMany({
+      where: { refund: 'requested' },
+      orderBy: { paidAt: 'asc' },
+      take: limit,
+    });
+    return rows.map(toDomain);
+  }
+
+  async markRefund(
+    id: string,
+    data: { refund: RefundState; refundAttempts: number; refundedAt: Date | null },
+  ): Promise<void> {
+    await this.db.sponsorship.update({ where: { id }, data });
+  }
+
+  async markRefundDoneByCharge(
+    gateway: string,
+    chargeId: string,
+    now: Date,
+  ): Promise<string | null> {
+    const row = await this.db.sponsorship.findUnique({
+      where: { paymentGateway_chargeId: { paymentGateway: gateway, chargeId } },
+      select: { id: true, refund: true, refundedAt: true },
+    });
+    if (!row) return null;
+    if (row.refund !== 'done') {
+      await this.db.sponsorship.update({
+        where: { id: row.id },
+        data: { refund: 'done', refundedAt: row.refundedAt ?? now },
+      });
+    }
+    return row.id;
+  }
+
+  /** `FOR UPDATE SKIP LOCKED`: dois workers nunca reivindicam o mesmo pedido (R-5). */
+  async claimForModeration(now: Date, claimUntil: Date): Promise<Sponsorship | null> {
+    return this.transaction(async (tx) => {
+      const rows = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM sponsorship
+        WHERE moderation = 'pending'
+          AND status = 'pending_payment'
+          AND payment_expires_at > ${now}
+          AND moderation_next_attempt_at <= ${now}
+          AND (moderation_claimed_until IS NULL OR moderation_claimed_until <= ${now})
+        ORDER BY created_at ASC
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED`;
+      if (rows.length === 0) return null;
+      const updated = await tx.sponsorship.update({
+        where: { id: rows[0].id },
+        data: { moderationClaimedUntil: claimUntil },
+      });
+      return toDomain(updated);
+    });
+  }
+
+  async releaseModerationClaim(id: string): Promise<void> {
+    await this.db.sponsorship.update({ where: { id }, data: { moderationClaimedUntil: null } });
+  }
+
+  /** Registro + escritas numa transação com a linha bloqueada (R-9); serializa com `confirm`. */
+  async recordModeration(
+    id: string,
+    record: ModerationRecordInput,
+    writes: ModerationWrites,
+  ): Promise<'applied' | 'order_changed'> {
+    return this.transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM sponsorship WHERE id = ${id}::uuid FOR UPDATE`;
+      if (locked.length === 0) return 'order_changed' as const;
+      const row = await tx.sponsorship.findUniqueOrThrow({ where: { id } });
+      await tx.sponsorshipModerationRecord.create({ data: { sponsorshipId: id, ...record } });
+      if (row.moderation !== 'pending' || row.status !== 'pending_payment') {
+        return 'order_changed' as const;
+      }
+      await tx.sponsorship.update({ where: { id }, data: writes });
+      return 'applied' as const;
+    });
+  }
+
+  async moderationCallsSince(provider: string, since: Date): Promise<number> {
+    return this.db.sponsorshipModerationRecord.count({
+      where: { provider, createdAt: { gte: since } },
+    });
   }
 }

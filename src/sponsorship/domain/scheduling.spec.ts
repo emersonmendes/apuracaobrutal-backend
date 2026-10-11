@@ -13,8 +13,15 @@ describe('agendamento — spec sponsorships R-4, R-5, R-6 (AC-05, AC-06)', () =>
   it('pedido novo nasce pendente, com preço congelado e validade do pagamento', () => {
     const order = newPendingOrder({
       id: 'id',
-      input: { slot: 'floor', minutes: 2, advertiserName: 'Ana', email: 'a@b.co' },
+      input: {
+        slot: 'floor',
+        minutes: 2,
+        advertiserName: 'Ana',
+        email: 'a@b.co',
+        cpfCnpj: '52998224725',
+      },
       quote: { priceTier: 'election_day', unitPriceCents: 500_000, amountCents: 1_000_000 },
+      imageSha256: 'a'.repeat(64),
       imageKey: 'id.webp',
       gateway: 'simulated',
       chargeId: 'sim_1',

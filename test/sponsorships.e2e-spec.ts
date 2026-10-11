@@ -19,6 +19,7 @@ const ORIGIN = 'http://localhost:3100';
 const MIN = 60_000;
 const NAME = 'Padaria Central Ltda';
 const EMAIL = 'contato@padaria-central.com.br';
+const CPF = '529.982.247-25';
 
 const solid = (width: number, height: number) =>
   sharp({ create: { width, height, channels: 3, background: '#ff7a00' } });
@@ -32,6 +33,8 @@ interface Fixture {
 
 async function createApp(config?: SponsorshipConfig): Promise<Fixture> {
   const repository = new InMemorySponsorshipRepository();
+  // Fluxos de pagamento: a moderação já aprovou (o gate é coberto na suíte de moderação abaixo).
+  repository.autoApprove = true;
   const storage = new InMemoryImageStorage();
   const clock = new FakeClock();
   let builder = Test.createTestingModule({ imports: [AppModule] })
@@ -68,6 +71,7 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
     minutes: '2',
     advertiserName: NAME,
     email: EMAIL,
+    cpfCnpj: CPF,
     acceptTerms: 'true',
     ...overrides,
   });
@@ -79,6 +83,8 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
   beforeAll(async () => {
     Logger.overrideLogger(false);
     delete process.env.CORS_ORIGINS;
+    // O `.env` local pode apontar para o Asaas; esta suíte cobre o gateway simulado.
+    process.env.PAYMENT_GATEWAY = 'simulated';
     process.env.SPONSORSHIP_IMAGE_MAX_BYTES = '200000';
     process.env.SPONSORSHIP_CREATE_LIMIT_PER_HOUR = '1000';
     png = await solid(400, 200).png().toBuffer();
@@ -102,9 +108,10 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
         amountCents: 600_000,
         status: 'pending_payment',
         paymentExpiresAt: '2026-10-25T23:30:00.000Z',
-        payment: { gateway: 'simulated' },
+        payment: { gateway: 'simulated', sandbox: true, method: null, refund: null },
+        moderation: { status: 'pending', categories: [] },
       });
-      expect(JSON.stringify(res.body)).not.toMatch(/Padaria|contato@/);
+      expect(JSON.stringify(res.body)).not.toMatch(/Padaria|contato@|52998224725/);
       expect(res.headers['access-control-allow-origin']).toBe(ORIGIN);
 
       const stored = f.storage.files.get(`${res.body.id}.webp`)!;
@@ -267,7 +274,96 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
     });
   });
 
-  it('documento OpenAPI tem as 6 rotas com a tag sponsorships (AC-13)', () => {
+  describe('moderação da imagem (specs/sponsorship-image-moderation)', () => {
+    beforeEach(() => {
+      f.repository.autoApprove = false;
+    });
+    afterEach(() => {
+      f.repository.autoApprove = true;
+    });
+
+    it('nasce pending e ignora campos de moderação do cliente (AC-12, cenário 24)', async () => {
+      const res = await post(
+        validFields({
+          moderation: 'approved',
+          'moderation[status]': 'approved',
+          status: 'scheduled',
+        }),
+      ).expect(201);
+      expect(res.body.moderation).toEqual({ status: 'pending', categories: [] });
+      expect(f.repository.rows.get(res.body.id)).toMatchObject({
+        moderation: 'pending',
+        status: 'pending_payment',
+      });
+    });
+
+    it('pendente → 409 moderation_pending no pagamento e nas instruções (AC-11, cenário 22)', async () => {
+      const { id } = await createOrder();
+      expect((await pay(id).expect(409)).body).toEqual({ code: 'moderation_pending' });
+      expect(
+        (await request(f.app.getHttpServer()).get(`/sponsorships/${id}/payment`).expect(409)).body,
+      ).toEqual({ code: 'moderation_pending' });
+      expect(f.repository.rows.get(id)).toMatchObject({ status: 'pending_payment', paidAt: null });
+    });
+
+    it('recusada → 409 moderation_rejected; GET mostra expired com as categorias (AC-11, AC-14)', async () => {
+      const { id } = await createOrder();
+      Object.assign(f.repository.rows.get(id)!, {
+        moderation: 'rejected',
+        moderationCategories: ['ELECTORAL_PROPAGANDA'],
+        status: 'expired',
+        expiryReason: 'moderation_rejected',
+        imageKey: null,
+      });
+      expect((await pay(id).expect(409)).body).toEqual({ code: 'moderation_rejected' });
+      const shown = await request(f.app.getHttpServer()).get(`/sponsorships/${id}`).expect(200);
+      expect(shown.body).toMatchObject({
+        status: 'expired',
+        moderation: { status: 'rejected', categories: ['ELECTORAL_PROPAGANDA'] },
+      });
+      expect(JSON.stringify(shown.body)).not.toMatch(/reasons|detected|confidence|prompt/);
+    });
+
+    it('erro → 409 moderation_error (AC-11)', async () => {
+      const { id } = await createOrder();
+      Object.assign(f.repository.rows.get(id)!, { moderation: 'error', status: 'expired' });
+      expect((await pay(id).expect(409)).body).toEqual({ code: 'moderation_error' });
+    });
+
+    it('aprovada → paga normalmente e aparece na agenda com a imagem (AC-11)', async () => {
+      const { id } = await createOrder();
+      f.repository.approve(id);
+      expect((await pay(id).expect(200)).body.moderation).toEqual({
+        status: 'approved',
+        categories: [],
+      });
+      await request(f.app.getHttpServer()).get(`/sponsorships/${id}/image`).expect(200);
+    });
+
+    it('imagem no disco diferente da analisada → 404 e fora da agenda (AC-10, cenário 25)', async () => {
+      f.repository.rows.clear();
+      const { id } = await createOrder();
+      f.repository.approve(id);
+      await pay(id).expect(200);
+      f.storage.files.set(`${id}.webp`, Buffer.from('outra'));
+      await request(f.app.getHttpServer()).get(`/sponsorships/${id}/image`).expect(404);
+      f.repository.rows.get(id)!.moderation = 'pending';
+      const schedule = await request(f.app.getHttpServer())
+        .get('/sponsorships/schedule')
+        .expect(200);
+      expect(schedule.body.items).toEqual([]);
+    });
+
+    it('documento OpenAPI traz moderation e os erros moderation_*, sem a auditoria (AC-19)', () => {
+      const doc = createSwaggerDocument(f.app);
+      const text = JSON.stringify(doc);
+      expect(text).toContain('ModerationInfoDto');
+      expect(text).toMatch(/moderation_pending.*moderation_rejected.*moderation_error/);
+      expect(text).not.toMatch(/ModerationRecord|ANTHROPIC|detectedText/);
+    });
+  });
+
+  it('documento OpenAPI tem as 7 rotas com a tag sponsorships (AC-13; asaas-payment FR-03)', () => {
     const doc = createSwaggerDocument(f.app);
     const routes = Object.entries(doc.paths)
       .filter(([path]) => path.startsWith('/sponsorships'))
@@ -284,6 +380,7 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
         'POST /sponsorships/{id}/simulated-payment',
         'GET /sponsorships/{id}',
         'GET /sponsorships/{id}/image',
+        'GET /sponsorships/{id}/payment',
       ].sort(),
     );
   });
@@ -302,6 +399,7 @@ describe('Sponsorships — preço por período (e2e) — specs/sponsorship-elect
         minutes: '2',
         advertiserName: NAME,
         email: EMAIL,
+        cpfCnpj: CPF,
         acceptTerms: 'true',
         ...fields,
       })
@@ -410,6 +508,7 @@ describe('Sponsorships em produção com gateway simulado (e2e, AC-09)', () => {
       .field('minutes', '1')
       .field('advertiserName', 'Ana Souza')
       .field('email', 'ana@exemplo.com')
+      .field('cpfCnpj', '52998224725')
       .field('acceptTerms', 'true')
       .attach('image', png, 'a.png')
       .expect(503);

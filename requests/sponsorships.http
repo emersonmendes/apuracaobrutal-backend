@@ -1,5 +1,8 @@
 ### Patrocínios na arena (spec: sponsorships FR-03)
 # Use com o "REST Client" do VS Code ou o HTTP Client do JetBrains. Pagamento SIMULADO.
+# A imagem nasce `moderation.status = pending`; o worker analisa e só `approved` libera o
+# pagamento (spec sponsorship-image-moderation). Acompanhe pelo GET do pedido:
+# { ..., "moderation": { "status": "pending|approved|rejected|error", "categories": [] } }
 @base = http://localhost:3433
 
 ### Oferta: preço por minuto e fila de cada local

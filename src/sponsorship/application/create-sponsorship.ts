@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { SponsorshipError } from '../domain/errors';
-import { OUTPUT_MAX_SIDE_PX, detectImageFormat, dimensionsAllowed } from '../domain/image-rules';
+import {
+  OUTPUT_MAX_SIDE_PX,
+  detectImageFormat,
+  dimensionsAllowed,
+  sha256Hex,
+} from '../domain/image-rules';
+import { localDateOf } from '../domain/local-date';
 import { priceTierOf, quote } from '../domain/pricing';
 import { newPendingOrder, schedule } from '../domain/scheduling';
 import { purchaseAvailable, type SponsorshipConfig } from '../domain/sponsorship-config';
@@ -46,6 +52,8 @@ export class CreateSponsorship {
 
     const id = this.newId();
     const imageKey = `${id}.webp`;
+    // Identidade da imagem analisada e publicada (sponsorship-image-moderation R-6).
+    const imageSha256 = sha256Hex(webp);
     await this.storage.save(imageKey, webp);
     try {
       // Preço só do backend: janela prevista pela fila atual do local → faixa → cotação
@@ -55,23 +63,31 @@ export class CreateSponsorship {
       const predicted = schedule(now, input.minutes, queueEnd);
       const tier = priceTierOf(predicted, this.config.electionDay);
       const price = quote(input.slot, input.minutes, tier, this.config);
-      const { chargeId } = await this.gateway.createCharge({
+      // Cobrança no gateway antes de gravar (asaas-payment R-3): vence na data civil do prazo de
+      // pagamento; o pagador vai só para o gateway, nunca para respostas.
+      const paymentExpiresAt = new Date(now.getTime() + this.config.paymentTtlMinutes * 60_000);
+      const charge = await this.gateway.createCharge({
         sponsorshipId: id,
         amountCents: price.amountCents,
         description: `Patrocínio ${input.slot} — ${input.minutes} min`,
+        dueDate: localDateOf(paymentExpiresAt),
+        payer: { name: input.advertiserName, email: input.email, cpfCnpj: input.cpfCnpj },
       });
       const order = newPendingOrder({
         id,
         input,
         quote: price,
         imageKey,
+        imageSha256,
         gateway: this.gateway.name,
-        chargeId,
+        chargeId: charge.chargeId,
+        gatewayCustomerId: charge.customerId,
+        invoiceUrl: charge.invoiceUrl,
         now,
         paymentTtlMinutes: this.config.paymentTtlMinutes,
       });
       await this.repository.create(order);
-      return toPublic(order, order.createdAt);
+      return toPublic(order, order.createdAt, this.config);
     } catch (error) {
       // Melhor esforço: a limpeza do worker cobre o que sobrar (FR-04).
       await this.storage.remove(imageKey).catch(() => undefined);

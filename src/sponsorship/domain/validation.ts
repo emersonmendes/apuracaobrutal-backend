@@ -1,4 +1,5 @@
 import type { ValidationErrorCode } from './errors';
+import { normalizeCpfCnpj } from './payer';
 import { isSlot, type SponsorshipSlot } from './slots';
 
 export interface RawOrderInput {
@@ -6,6 +7,7 @@ export interface RawOrderInput {
   minutes?: unknown;
   advertiserName?: unknown;
   email?: unknown;
+  cpfCnpj?: unknown;
   acceptTerms?: unknown;
 }
 
@@ -14,6 +16,8 @@ export interface OrderInput {
   minutes: number;
   advertiserName: string;
   email: string;
+  /** Só dígitos (asaas-payment R-2). */
+  cpfCnpj: string;
 }
 
 export type ValidationResult =
@@ -29,7 +33,8 @@ function parseMinutes(raw: unknown, max: number): number | null {
 }
 
 /**
- * Valida os campos do pedido na ordem da FR-03 (R-3, R-8). Devolve o primeiro erro encontrado.
+ * Valida os campos do pedido na ordem da FR-03 (R-3, R-8; CPF/CNPJ: asaas-payment R-2). Devolve
+ * o primeiro erro encontrado.
  */
 export function validateOrderInput(raw: RawOrderInput, maxMinutes: number): ValidationResult {
   if (!isSlot(raw.slot)) return { ok: false, code: 'invalid_slot' };
@@ -45,9 +50,12 @@ export function validateOrderInput(raw: RawOrderInput, maxMinutes: number): Vali
   const email = typeof raw.email === 'string' ? raw.email.trim() : '';
   if (email.length > 254 || !EMAIL.test(email)) return { ok: false, code: 'invalid_email' };
 
+  const cpfCnpj = normalizeCpfCnpj(raw.cpfCnpj);
+  if (cpfCnpj === null) return { ok: false, code: 'invalid_cpf_cnpj' };
+
   if (raw.acceptTerms !== true && raw.acceptTerms !== 'true') {
     return { ok: false, code: 'terms_not_accepted' };
   }
 
-  return { ok: true, value: { slot: raw.slot, minutes, advertiserName, email } };
+  return { ok: true, value: { slot: raw.slot, minutes, advertiserName, email, cpfCnpj } };
 }

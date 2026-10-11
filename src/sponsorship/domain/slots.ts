@@ -31,3 +31,20 @@ export function priceKeyOf(slot: SponsorshipSlot): PriceKey {
       return slot;
   }
 }
+
+/** Descrição em pt-BR do espaço, enviada ao analisador de imagens (sponsorship-image-moderation R-8). */
+export function slotPlacement(slot: SponsorshipSlot): string {
+  switch (slot) {
+    case 'side_left':
+      return 'painel vertical lateral esquerdo do fundo da arena';
+    case 'side_right':
+      return 'painel vertical lateral direito do fundo da arena';
+    case 'center':
+      return 'faixa horizontal central do fundo da arena';
+    case 'floor':
+      return 'retângulo central do piso da arena';
+    case 'glove_red':
+    case 'glove_blue':
+      return 'adesivo quadrado na luva de um lutador';
+  }
+}

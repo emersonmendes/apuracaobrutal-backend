@@ -1,6 +1,18 @@
 import { Logger, Module } from '@nestjs/common';
+import { parseElectionConfig } from '../election/infra/config/election-config.factory';
+import { ModerateImage } from '../moderation/application/moderate-image';
+import {
+  MODERATION_CONFIG,
+  type ModerationConfig,
+} from '../moderation/infra/config/moderation-config.factory';
+import { ModerationModule } from '../moderation/moderation.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { PrismaService } from '../prisma/prisma.service';
 import { ExpirePendingSponsorships } from './application/expire-pending-sponsorships';
+import { ModeratePendingSponsorships } from './application/moderate-pending-sponsorships';
+import { ProcessPaymentRefunds } from './application/process-payment-refunds';
+import { CANDIDATE_NAMES, type CandidateNames } from './domain/ports/candidate-names';
+import { PAYMENT_GATEWAY, type PaymentGateway } from './domain/ports/payment-gateway';
 import { SPONSORSHIP_CLOCK, type Clock } from './domain/ports/clock';
 import {
   SPONSOR_IMAGE_STORAGE,
@@ -10,20 +22,75 @@ import {
   SPONSORSHIP_REPOSITORY,
   type SponsorshipRepository,
 } from './domain/ports/sponsorship-repository';
+import type { SponsorshipConfig } from './domain/sponsorship-config';
+import { PrismaCandidateNames } from './infra/adapters/prisma-candidate-names';
+import { SPONSORSHIP_CONFIG } from './infra/config/sponsorship-config.factory';
 import { SPONSORSHIP_CORE_PROVIDERS } from './sponsorship.module';
 
-/** Runtime worker: limpeza periódica dos patrocínios (spec sponsorships FR-05). */
+/**
+ * Runtime worker: limpeza periódica, estornos e moderação das imagens dos patrocínios
+ * (sponsorships FR-05; asaas-payment FR-05; sponsorship-image-moderation FR-05).
+ */
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, ModerationModule],
   providers: [
     ...SPONSORSHIP_CORE_PROVIDERS,
     {
       provide: ExpirePendingSponsorships,
-      useFactory: (r: SponsorshipRepository, s: SponsorImageStorage, c: Clock) =>
-        new ExpirePendingSponsorships(r, s, c, new Logger('SponsorshipCleanup')),
-      inject: [SPONSORSHIP_REPOSITORY, SPONSOR_IMAGE_STORAGE, SPONSORSHIP_CLOCK],
+      useFactory: (r: SponsorshipRepository, s: SponsorImageStorage, c: Clock, g: PaymentGateway) =>
+        new ExpirePendingSponsorships(r, s, c, new Logger('SponsorshipCleanup'), g),
+      inject: [SPONSORSHIP_REPOSITORY, SPONSOR_IMAGE_STORAGE, SPONSORSHIP_CLOCK, PAYMENT_GATEWAY],
+    },
+    {
+      provide: ProcessPaymentRefunds,
+      useFactory: (r: SponsorshipRepository, g: PaymentGateway, c: Clock) =>
+        new ProcessPaymentRefunds(r, g, c, new Logger('PaymentRefunds')),
+      inject: [SPONSORSHIP_REPOSITORY, PAYMENT_GATEWAY, SPONSORSHIP_CLOCK],
+    },
+    // Nomes de urna dos dois lados para a regra D-6 (sponsorship-image-moderation R-4).
+    {
+      provide: CANDIDATE_NAMES,
+      useFactory: (prisma: PrismaService): CandidateNames => {
+        const election = parseElectionConfig(process.env);
+        return new PrismaCandidateNames(prisma, election.electionCode, election.sides);
+      },
+      inject: [PrismaService],
+    },
+    {
+      provide: ModeratePendingSponsorships,
+      useFactory: (
+        r: SponsorshipRepository,
+        s: SponsorImageStorage,
+        moderate: ModerateImage,
+        names: CandidateNames,
+        g: PaymentGateway,
+        c: Clock,
+        cfg: SponsorshipConfig,
+        moderation: ModerationConfig,
+      ) =>
+        new ModeratePendingSponsorships(
+          r,
+          s,
+          moderate,
+          names,
+          g,
+          c,
+          cfg,
+          moderation.timeoutMs,
+          new Logger('ImageModeration'),
+        ),
+      inject: [
+        SPONSORSHIP_REPOSITORY,
+        SPONSOR_IMAGE_STORAGE,
+        ModerateImage,
+        CANDIDATE_NAMES,
+        PAYMENT_GATEWAY,
+        SPONSORSHIP_CLOCK,
+        SPONSORSHIP_CONFIG,
+        MODERATION_CONFIG,
+      ],
     },
   ],
-  exports: [ExpirePendingSponsorships],
+  exports: [ExpirePendingSponsorships, ProcessPaymentRefunds, ModeratePendingSponsorships],
 })
 export class SponsorshipWorkerModule {}

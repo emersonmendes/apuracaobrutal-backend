@@ -163,28 +163,160 @@ enum SponsorshipPriceTier {
   @@map("sponsorship_price_tier")
 }
 
+/// Forma com que a cobrança foi paga (spec asaas-payment R-5).
+enum SponsorshipPaymentMethod {
+  pix
+  credit_card
+  other
+
+  @@map("sponsorship_payment_method")
+}
+
+/// Estado do estorno de um pagamento recebido que não pôde ser agendado (asaas-payment R-7).
+enum SponsorshipRefund {
+  none
+  requested
+  done
+  failed
+
+  @@map("sponsorship_refund")
+}
+
+/// Motivo de um pedido ter expirado (asaas-payment R-5, R-8; sponsorship-image-moderation R-2, R-7).
+enum SponsorshipExpiryReason {
+  payment_timeout
+  price_changed
+  moderation_rejected
+  moderation_error
+  moderation_pending
+
+  @@map("sponsorship_expiry_reason")
+}
+
+/// Estado da moderação automática da imagem (sponsorship-image-moderation R-2).
+enum SponsorshipModeration {
+  pending
+  approved
+  rejected
+  error
+
+  @@map("sponsorship_moderation")
+}
+
+/// Desfecho de uma tentativa de moderação (sponsorship-image-moderation R-9).
+enum ModerationOutcome {
+  approved
+  rejected
+  error
+
+  @@map("moderation_outcome")
+}
+
+/// Desfecho gravado com cada evento de webhook recebido (asaas-payment FR-02, R-6).
+enum PaymentWebhookOutcome {
+  scheduled
+  refund_requested
+  refund_done
+  ignored
+  rejected
+
+  @@map("payment_webhook_outcome")
+}
+
 /// Pedido de patrocínio (R-4). `startsAt`/`endsAt` só existem quando `scheduled` (R-5).
 model Sponsorship {
-  id               String               @id @db.Uuid
-  slot             SponsorshipSlot
-  minutes          Int
+  id                      String                    @id @db.Uuid
+  slot                    SponsorshipSlot
+  minutes                 Int
   /// Congelada na criação; revalidada na confirmação (sponsorship-election-pricing R-4, R-5).
-  priceTier        SponsorshipPriceTier @map("price_tier")
-  unitPriceCents   Int                  @map("unit_price_cents")
-  amountCents      Int                  @map("amount_cents")
-  advertiserName   String               @map("advertiser_name")
-  email            String
+  priceTier               SponsorshipPriceTier      @map("price_tier")
+  unitPriceCents          Int                       @map("unit_price_cents")
+  amountCents             Int                       @map("amount_cents")
+  advertiserName          String                    @map("advertiser_name")
+  email                   String
+  /// CPF/CNPJ do pagador, só dígitos (asaas-payment R-2); nulo em pedidos anteriores.
+  cpfCnpj                 String?                   @map("cpf_cnpj")
   /// `null` depois que a limpeza do worker apaga a imagem (FR-05).
-  imageKey         String?              @map("image_key")
-  status           SponsorshipStatus
-  paymentGateway   String               @map("payment_gateway")
-  chargeId         String               @map("charge_id")
-  createdAt        DateTime             @map("created_at") @db.Timestamptz(3)
-  paymentExpiresAt DateTime             @map("payment_expires_at") @db.Timestamptz(3)
-  confirmedAt      DateTime?            @map("confirmed_at") @db.Timestamptz(3)
-  startsAt         DateTime?            @map("starts_at") @db.Timestamptz(3)
-  endsAt           DateTime?            @map("ends_at") @db.Timestamptz(3)
+  imageKey                String?                   @map("image_key")
+  /// SHA-256 (hex) do WebP gravado (sponsorship-image-moderation R-6); nulo em linhas antigas.
+  imageSha256             String?                   @map("image_sha256")
+  status                  SponsorshipStatus
+  /// Moderação automática (sponsorship-image-moderation R-2); independente de `status`.
+  moderation              SponsorshipModeration     @default(pending)
+  moderationAttempts      Int                       @default(0) @map("moderation_attempts")
+  moderationNextAttemptAt DateTime?                 @map("moderation_next_attempt_at") @db.Timestamptz(3)
+  moderationClaimedUntil  DateTime?                 @map("moderation_claimed_until") @db.Timestamptz(3)
+  moderatedAt             DateTime?                 @map("moderated_at") @db.Timestamptz(3)
+  /// Categorias da decisão final (vazio fora de `rejected`).
+  moderationCategories    String[]                  @default([]) @map("moderation_categories")
+  paymentGateway          String                    @map("payment_gateway")
+  chargeId                String                    @map("charge_id")
+  /// Cliente da cobrança no gateway e fatura hospedada (asaas-payment R-3).
+  gatewayCustomerId       String?                   @map("gateway_customer_id")
+  invoiceUrl              String?                   @map("invoice_url")
+  paymentMethod           SponsorshipPaymentMethod? @map("payment_method")
+  paidAt                  DateTime?                 @map("paid_at") @db.Timestamptz(3)
+  refund                  SponsorshipRefund         @default(none)
+  refundAttempts          Int                       @default(0) @map("refund_attempts")
+  refundedAt              DateTime?                 @map("refunded_at") @db.Timestamptz(3)
+  expiryReason            SponsorshipExpiryReason?  @map("expiry_reason")
+  createdAt               DateTime                  @map("created_at") @db.Timestamptz(3)
+  paymentExpiresAt        DateTime                  @map("payment_expires_at") @db.Timestamptz(3)
+  confirmedAt             DateTime?                 @map("confirmed_at") @db.Timestamptz(3)
+  startsAt                DateTime?                 @map("starts_at") @db.Timestamptz(3)
+  endsAt                  DateTime?                 @map("ends_at") @db.Timestamptz(3)
 
+  @@unique([paymentGateway, chargeId])
   @@index([slot, status, endsAt])
+  @@index([refund])
+  @@index([moderation, moderationNextAttemptAt])
   @@map("sponsorship")
+}
+
+/// Registro de auditoria de uma tentativa de moderação (sponsorship-image-moderation FR-02, R-9).
+/// Uma linha por tentativa; nunca apagada. Nunca contém credenciais nem dados do anunciante.
+model SponsorshipModerationRecord {
+  id             String            @id @default(uuid()) @db.Uuid
+  sponsorshipId  String            @map("sponsorship_id") @db.Uuid
+  attempt        Int
+  provider       String
+  model          String?
+  policyVersion  String            @map("policy_version")
+  outcome        ModerationOutcome
+  /// Decisão bruta do modelo (`APPROVE`/`REJECT`); nula em recusa do provedor ou falha.
+  modelDecision  String?           @map("model_decision")
+  categories     String[]          @default([])
+  reasons        String[]          @default([])
+  detectedText   String[]          @default([]) @map("detected_text")
+  confidence     Decimal?          @db.Decimal(4, 3)
+  /// Regras determinísticas acionadas (ex.: `D-3`).
+  rejectionRules String[]          @default([]) @map("rejection_rules")
+  errorCode      String?           @map("error_code")
+  requestId      String?           @map("request_id")
+  imageSha256    String?           @map("image_sha256")
+  latencyMs      Int               @map("latency_ms")
+  inputTokens    Int?              @map("input_tokens")
+  outputTokens   Int?              @map("output_tokens")
+  createdAt      DateTime          @map("created_at") @db.Timestamptz(3)
+
+  @@unique([sponsorshipId, attempt])
+  @@index([sponsorshipId])
+  @@index([provider, createdAt])
+  @@map("sponsorship_moderation_record")
+}
+
+/// Evento de webhook do gateway de pagamento (asaas-payment FR-02, R-6). O `id` é o do evento no
+/// gateway: chave de idempotência. Guardado para auditoria; nunca apagado.
+model PaymentWebhookEvent {
+  id            String                @id
+  gateway       String
+  event         String
+  chargeId      String?               @map("charge_id")
+  sponsorshipId String?               @map("sponsorship_id") @db.Uuid
+  receivedAt    DateTime              @map("received_at") @db.Timestamptz(3)
+  outcome       PaymentWebhookOutcome
+  payload       Json
+
+  @@index([sponsorshipId])
+  @@map("payment_webhook_event")
 }

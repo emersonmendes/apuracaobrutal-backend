@@ -1,5 +1,5 @@
 import { standardTable } from '../../domain/pricing';
-import type { ElectionDay, SponsorshipConfig } from '../../domain/sponsorship-config';
+import type { AsaasConfig, ElectionDay, SponsorshipConfig } from '../../domain/sponsorship-config';
 
 export const SPONSORSHIP_CONFIG = Symbol('SPONSORSHIP_CONFIG');
 
@@ -99,16 +99,54 @@ export function electionDayOf(date: string): ElectionDay | null {
   };
 }
 
+const ASAAS_BASE_URL: Record<AsaasConfig['environment'], string> = {
+  sandbox: 'https://api-sandbox.asaas.com/v3',
+  production: 'https://api.asaas.com/v3',
+};
+
+/**
+ * Acesso ao Asaas (spec asaas-payment FR-01, R-1): chave e token obrigatórios; token com 32–255
+ * caracteres, sem espaços e diferente da chave. As mensagens nunca ecoam o valor da chave.
+ */
+function parseAsaasConfig(env: Env, problems: string[]): AsaasConfig {
+  const environment = value(env, 'ASAAS_ENVIRONMENT', 'sandbox');
+  if (environment !== 'sandbox' && environment !== 'production') {
+    problems.push(`ASAAS_ENVIRONMENT aceita apenas "sandbox" ou "production"`);
+  }
+  const apiKey = value(env, 'ASAAS_API_KEY', '');
+  if (apiKey === '') problems.push('ASAAS_API_KEY é obrigatória com PAYMENT_GATEWAY=asaas');
+  const webhookToken = value(env, 'ASAAS_WEBHOOK_TOKEN', '');
+  if (webhookToken === '') {
+    problems.push('ASAAS_WEBHOOK_TOKEN é obrigatório com PAYMENT_GATEWAY=asaas');
+  } else if (webhookToken.length < 32 || webhookToken.length > 255 || /\s/.test(webhookToken)) {
+    problems.push('ASAAS_WEBHOOK_TOKEN deve ter 32–255 caracteres sem espaços');
+  } else if (webhookToken === apiKey) {
+    problems.push('ASAAS_WEBHOOK_TOKEN não pode ser igual à ASAAS_API_KEY');
+  }
+  const timeoutMs = integer(env, 'ASAAS_TIMEOUT_MS', 10_000, 1_000, problems);
+  const resolved = environment === 'production' ? 'production' : 'sandbox';
+  return {
+    environment: resolved,
+    baseUrl: ASAAS_BASE_URL[resolved],
+    apiKey,
+    webhookToken,
+    timeoutMs,
+  };
+}
+
 /**
  * Lê e valida a configuração de patrocínios (spec sponsorships FR-01, R-3, R-9;
- * sponsorship-election-pricing FR-01). Qualquer valor
- * inválido impede a subida do processo.
+ * sponsorship-election-pricing FR-01; asaas-payment FR-01). Qualquer valor inválido impede a
+ * subida do processo.
  */
 export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
   const problems: string[] = [];
 
   const gateway = value(env, 'PAYMENT_GATEWAY', 'simulated');
-  if (gateway !== 'simulated') problems.push(`PAYMENT_GATEWAY aceita apenas "simulated"`);
+  if (gateway !== 'simulated' && gateway !== 'asaas') {
+    problems.push(`PAYMENT_GATEWAY aceita apenas "simulated" ou "asaas"`);
+  }
+  const asaas = gateway === 'asaas' ? parseAsaasConfig(env, problems) : null;
 
   const pricesCents = {
     floor: integer(env, 'SPONSORSHIP_PRICE_FLOOR_CENTS', 500_000, 1, problems),
@@ -134,10 +172,28 @@ export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
   const createLimitPerHour = integer(env, 'SPONSORSHIP_CREATE_LIMIT_PER_HOUR', 10, 1, problems);
   const storageDir = value(env, 'SPONSORSHIP_STORAGE_DIR', './storage/sponsorships');
 
+  // Moderação automática (sponsorship-image-moderation FR-01).
+  const maxAttempts = integer(env, 'SPONSORSHIP_MODERATION_MAX_ATTEMPTS', 3, 1, problems);
+  if (maxAttempts > 5) problems.push('SPONSORSHIP_MODERATION_MAX_ATTEMPTS deve ser ≤ 5');
+  const rawConfidence = value(env, 'SPONSORSHIP_MODERATION_MIN_CONFIDENCE', '0.85');
+  const minConfidence = Number(rawConfidence);
+  if (
+    !/^\d+(\.\d+)?$/.test(rawConfidence) ||
+    !Number.isFinite(minConfidence) ||
+    minConfidence < 0.5 ||
+    minConfidence > 1
+  ) {
+    problems.push(
+      `SPONSORSHIP_MODERATION_MIN_CONFIDENCE deve ser um decimal entre 0.5 e 1 (recebido: "${rawConfidence}")`,
+    );
+  }
+  const maxPerHour = integer(env, 'SPONSORSHIP_MODERATION_MAX_PER_HOUR', 200, 1, problems);
+
   if (problems.length > 0) throw new InvalidSponsorshipConfigError(problems);
 
   return {
-    gateway: 'simulated',
+    gateway: gateway === 'asaas' ? 'asaas' : 'simulated',
+    asaas,
     production: env.NODE_ENV === 'production',
     pricesCents,
     standardPricesCents,
@@ -147,5 +203,6 @@ export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
     imageMaxBytes,
     storageDir,
     createLimitPerHour,
+    moderation: { maxAttempts, minConfidence, maxPerHour },
   };
 }

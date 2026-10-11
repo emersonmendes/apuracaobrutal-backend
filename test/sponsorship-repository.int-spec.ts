@@ -5,6 +5,7 @@ import { newPendingOrder, type Sponsorship } from '../src/sponsorship/domain/sch
 import type { PriceTier } from '../src/sponsorship/domain/pricing';
 import type { SponsorshipSlot } from '../src/sponsorship/domain/slots';
 import type { ElectionDay } from '../src/sponsorship/domain/sponsorship-config';
+import type { SponsorshipRepository } from '../src/sponsorship/domain/ports/sponsorship-repository';
 import { PrismaSponsorshipRepository } from '../src/sponsorship/infra/adapters/prisma-sponsorship-repository';
 import { PrismaService } from '../src/prisma/prisma.service';
 
@@ -30,17 +31,26 @@ async function order(
   const id = randomUUID();
   const sponsorship = newPendingOrder({
     id,
-    input: { slot, minutes, advertiserName: 'Teste Integração', email: 'int@exemplo.com' },
+    input: {
+      slot,
+      minutes,
+      advertiserName: 'Teste Integração',
+      email: 'int@exemplo.com',
+      cpfCnpj: '52998224725',
+    },
     quote: { priceTier, unitPriceCents: 100, amountCents: 100 * minutes },
     imageKey: `${id}.webp`,
+    imageSha256: 'a'.repeat(64),
     gateway: 'simulated',
     chargeId: `sim_${id}`,
     now,
     paymentTtlMinutes: 30,
   });
   await repository.create(sponsorship);
+  // Moderação já aprovada (sponsorship-image-moderation R-7): o gate é testado no int-spec próprio.
+  await prisma.sponsorship.update({ where: { id }, data: { moderation: 'approved' } });
   created.push(id);
-  return sponsorship;
+  return { ...sponsorship, moderation: 'approved' as const };
 }
 
 describe('PrismaSponsorshipRepository (integração) — specs/sponsorships AC-07', () => {
@@ -94,13 +104,21 @@ describe('PrismaSponsorshipRepository (integração) — specs/sponsorships AC-0
   it('vencido vira expired; inexistente → not_found; limpeza expira pendentes', async () => {
     const late = await order('side_left', 1);
     const after = new Date(T0.getTime() + 31 * 60_000);
-    expect(await repository.confirm(late.id, after, FAR_ELECTION)).toEqual({ kind: 'expired' });
+    expect(await repository.confirm(late.id, after, FAR_ELECTION)).toEqual({
+      kind: 'expired',
+      refundRequested: false,
+    });
     expect((await repository.findById(late.id))?.status).toBe('expired');
     expect(await repository.confirm(randomUUID(), T0, FAR_ELECTION)).toEqual({ kind: 'not_found' });
 
     const pending = await order('side_right', 1);
     const expired = await repository.expirePending(after);
-    expect(expired).toContainEqual({ id: pending.id, imageKey: `${pending.id}.webp` });
+    expect(expired).toContainEqual({
+      id: pending.id,
+      imageKey: `${pending.id}.webp`,
+      paymentGateway: 'simulated',
+      chargeId: pending.chargeId,
+    });
     await repository.clearImage(pending.id);
     expect(await repository.findById(pending.id)).toMatchObject({
       status: 'expired',
@@ -133,13 +151,19 @@ describe('PrismaSponsorshipRepository (integração) — specs/sponsorships AC-0
     const cheap = await order('center', 5, T0, 'standard');
     // A fila do centro (de outro teste) termina no máximo em T0 + 2 min: a janela real toca o dia.
 
-    expect(await repository.confirm(cheap.id, T0, electionDay)).toEqual({ kind: 'price_changed' });
+    expect(await repository.confirm(cheap.id, T0, electionDay)).toEqual({
+      kind: 'price_changed',
+      refundRequested: false,
+    });
     expect(await repository.findById(cheap.id)).toMatchObject({
       status: 'expired',
       startsAt: null,
       endsAt: null,
     });
-    expect(await repository.confirm(cheap.id, T0, electionDay)).toEqual({ kind: 'expired' });
+    expect(await repository.confirm(cheap.id, T0, electionDay)).toEqual({
+      kind: 'expired',
+      refundRequested: false,
+    });
 
     const full = await order('center', 5, T0, 'election_day');
     const ok = await repository.confirm(full.id, T0, electionDay);
@@ -161,5 +185,116 @@ describe('PrismaSponsorshipRepository (integração) — specs/sponsorships AC-0
       SELECT column_default FROM information_schema.columns
       WHERE table_name = 'sponsorship' AND column_name = 'price_tier'`;
     expect(column.column_default).toBeNull();
+  });
+});
+
+describe('PrismaSponsorshipRepository (integração) — specs/asaas-payment AC-07', () => {
+  // Os pedidos deste bloco também são apagados no fim (o afterAll do bloco anterior já rodou).
+  afterAll(async () => {
+    await prisma.sponsorship.deleteMany({ where: { id: { in: created } } });
+  });
+
+  const RECEIVED = { chargeId: '', amountCents: 0, method: 'pix' as const };
+  const paidFor = (o: Sponsorship) => ({
+    ...RECEIVED,
+    chargeId: o.chargeId,
+    amountCents: o.amountCents,
+  });
+
+  it('pagamento recebido de pedido vencido: expired + payment_timeout + estorno pedido, sem janela', async () => {
+    const o = await order('side_left', 2);
+    const late = new Date(T0.getTime() + 31 * 60_000);
+    const outcome = await repository.confirm(o.id, late, FAR_ELECTION, paidFor(o));
+    expect(outcome).toEqual({ kind: 'expired', refundRequested: true });
+    expect(await repository.findById(o.id)).toMatchObject({
+      status: 'expired',
+      expiryReason: 'payment_timeout',
+      refund: 'requested',
+      paidAt: late,
+      paymentMethod: 'pix',
+      startsAt: null,
+      endsAt: null,
+    });
+    // Reprocessar o mesmo pagamento não regride nada.
+    expect(await repository.confirm(o.id, late, FAR_ELECTION, paidFor(o))).toEqual({
+      kind: 'expired',
+      refundRequested: true,
+    });
+    expect((await repository.findById(o.id))?.paidAt).toEqual(late);
+  });
+
+  it('pagamento recebido agenda e registra paidAt/método; estornos pedidos aparecem na fila', async () => {
+    const o = await order('side_right', 1);
+    const outcome = await repository.confirm(o.id, T0, FAR_ELECTION, {
+      ...paidFor(o),
+      method: 'credit_card',
+    });
+    expect(outcome.kind).toBe('scheduled');
+    expect(await repository.findById(o.id)).toMatchObject({
+      status: 'scheduled',
+      paidAt: T0,
+      paymentMethod: 'credit_card',
+      refund: 'none',
+    });
+
+    const late = await order('center', 1);
+    const at = new Date(T0.getTime() + 40 * 60_000);
+    await repository.confirm(late.id, at, FAR_ELECTION, paidFor(late));
+    const queue = await repository.refundsRequested(100);
+    expect(queue.map((row) => row.id)).toContain(late.id);
+    await repository.markRefund(late.id, { refund: 'done', refundAttempts: 1, refundedAt: at });
+    expect((await repository.refundsRequested(100)).map((row) => row.id)).not.toContain(late.id);
+    expect(await repository.markRefundDoneByCharge('simulated', late.chargeId, at)).toBe(late.id);
+    expect(await repository.markRefundDoneByCharge('simulated', 'pay_nope', at)).toBeNull();
+  });
+
+  it('evento de webhook e efeito na mesma transação; id repetido não reaplica; erro desfaz tudo', async () => {
+    const o = await order('floor', 1);
+    const event = {
+      id: `evt_int_${o.id}`,
+      gateway: 'simulated',
+      event: 'PAYMENT_RECEIVED',
+      chargeId: o.chargeId,
+      sponsorshipId: o.id,
+      receivedAt: T0,
+      payload: { id: `evt_int_${o.id}` },
+    };
+    await expect(
+      repository.recordWebhookEvent(event, async () => {
+        throw new Error('falha no efeito');
+      }),
+    ).rejects.toThrow('falha no efeito');
+    expect(await prisma.paymentWebhookEvent.findUnique({ where: { id: event.id } })).toBeNull();
+
+    let applied = 0;
+    const apply = async (repo: SponsorshipRepository) => {
+      applied++;
+      const outcome = await repo.confirm(o.id, T0, FAR_ELECTION, paidFor(o));
+      return outcome.kind === 'scheduled' ? ('scheduled' as const) : ('rejected' as const);
+    };
+    expect(await repository.recordWebhookEvent(event, apply)).toBe('scheduled');
+    expect(await repository.recordWebhookEvent(event, apply)).toBe('duplicate');
+    expect(applied).toBe(1);
+    expect(await prisma.paymentWebhookEvent.findUnique({ where: { id: event.id } })).toMatchObject({
+      outcome: 'scheduled',
+      sponsorshipId: o.id,
+    });
+    await prisma.paymentWebhookEvent.delete({ where: { id: event.id } });
+  });
+
+  it('expirePending grava o motivo e devolve gateway e cobrança', async () => {
+    const o = await order('glove_red', 1);
+    const late = new Date(T0.getTime() + 31 * 60_000);
+    const expired = await repository.expirePending(late);
+    expect(expired.find((row) => row.id === o.id)).toEqual({
+      id: o.id,
+      imageKey: `${o.id}.webp`,
+      paymentGateway: 'simulated',
+      chargeId: o.chargeId,
+    });
+    expect(await repository.findById(o.id)).toMatchObject({
+      status: 'expired',
+      expiryReason: 'payment_timeout',
+    });
   });
 });

@@ -7,6 +7,7 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
   it('usa os padrões da spec', () => {
     expect(parseSponsorshipConfig({})).toEqual({
       gateway: 'simulated',
+      asaas: null,
       production: false,
       pricesCents: { floor: 500_000, center: 300_000, glove: 200_000, side: 100_000 },
       standardPricesCents: { floor: 2_500, center: 1_500, glove: 1_000, side: 500 },
@@ -20,7 +21,18 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
       imageMaxBytes: 2_097_152,
       storageDir: './storage/sponsorships',
       createLimitPerHour: 10,
+      moderation: { maxAttempts: 3, minConfidence: 0.85, maxPerHour: 200 },
     });
+  });
+
+  it('lê a política de moderação do ambiente (sponsorship-image-moderation FR-01, AC-01)', () => {
+    expect(
+      parseSponsorshipConfig({
+        SPONSORSHIP_MODERATION_MAX_ATTEMPTS: '5',
+        SPONSORSHIP_MODERATION_MIN_CONFIDENCE: '0.9',
+        SPONSORSHIP_MODERATION_MAX_PER_HOUR: '50',
+      }).moderation,
+    ).toEqual({ maxAttempts: 5, minConfidence: 0.9, maxPerHour: 50 });
   });
 
   it('lê os valores do ambiente e marca produção', () => {
@@ -47,8 +59,70 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
     ['SPONSORSHIP_ELECTION_DATE', '25/10/2026'],
     ['SPONSORSHIP_ELECTION_DATE', '2026-02-30'],
     ['SPONSORSHIP_ELECTION_DATE', '2026-13-01'],
+    ['SPONSORSHIP_MODERATION_MAX_ATTEMPTS', '0'],
+    ['SPONSORSHIP_MODERATION_MAX_ATTEMPTS', '6'],
+    ['SPONSORSHIP_MODERATION_MIN_CONFIDENCE', '0.4'],
+    ['SPONSORSHIP_MODERATION_MIN_CONFIDENCE', '1.1'],
+    ['SPONSORSHIP_MODERATION_MIN_CONFIDENCE', 'alta'],
+    ['SPONSORSHIP_MODERATION_MAX_PER_HOUR', '0'],
   ])('%s=%s impede a inicialização', (name, raw) => {
     expect(() => parseSponsorshipConfig({ [name]: raw })).toThrow(InvalidSponsorshipConfigError);
+  });
+
+  describe('gateway asaas — spec asaas-payment FR-01, R-1 (AC-02)', () => {
+    const KEY = '$aact_test_key_000000000000000000000000000000';
+    const TOKEN = 'whsec_0123456789abcdef0123456789abcdef';
+    const asaas = (overrides: Record<string, string | undefined> = {}) =>
+      parseSponsorshipConfig({
+        PAYMENT_GATEWAY: 'asaas',
+        ASAAS_API_KEY: KEY,
+        ASAAS_WEBHOOK_TOKEN: TOKEN,
+        ...overrides,
+      });
+
+    it('sandbox por padrão, com a URL base do ambiente', () => {
+      expect(asaas()).toMatchObject({
+        gateway: 'asaas',
+        asaas: {
+          environment: 'sandbox',
+          baseUrl: 'https://api-sandbox.asaas.com/v3',
+          apiKey: KEY,
+          webhookToken: TOKEN,
+          timeoutMs: 10_000,
+        },
+      });
+      expect(
+        asaas({ ASAAS_ENVIRONMENT: 'production', ASAAS_TIMEOUT_MS: '2500' }).asaas,
+      ).toMatchObject({
+        environment: 'production',
+        baseUrl: 'https://api.asaas.com/v3',
+        timeoutMs: 2_500,
+      });
+    });
+
+    it.each([
+      ['sem chave', { ASAAS_API_KEY: '' }],
+      ['sem token', { ASAAS_WEBHOOK_TOKEN: '' }],
+      ['token curto', { ASAAS_WEBHOOK_TOKEN: 'curto' }],
+      ['token com espaço', { ASAAS_WEBHOOK_TOKEN: `${TOKEN} com espaco` }],
+      ['token igual à chave', { ASAAS_WEBHOOK_TOKEN: KEY, ASAAS_API_KEY: KEY }],
+      ['ambiente desconhecido', { ASAAS_ENVIRONMENT: 'staging' }],
+      ['timeout baixo', { ASAAS_TIMEOUT_MS: '999' }],
+    ])('%s impede a inicialização', (_label, overrides) => {
+      expect(() => asaas(overrides)).toThrow(InvalidSponsorshipConfigError);
+    });
+
+    it('a mensagem de erro nunca ecoa a chave', () => {
+      expect(() => asaas({ ASAAS_WEBHOOK_TOKEN: KEY })).toThrow(
+        expect.not.stringContaining(KEY) as unknown as string,
+      );
+    });
+
+    it('com gateway simulado as variáveis ASAAS_* são ignoradas', () => {
+      const config = parseSponsorshipConfig({ ASAAS_ENVIRONMENT: 'staging', ASAAS_API_KEY: '' });
+      expect(config.gateway).toBe('simulated');
+      expect(config.asaas).toBeNull();
+    });
   });
 
   it('acumula todos os problemas', () => {

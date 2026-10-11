@@ -1,0 +1,66 @@
+### Pagamento real via Asaas (spec: asaas-payment FR-07, Fluxo 7)
+# Use com o "REST Client" do VS Code ou o HTTP Client do JetBrains. Nenhum segredo aqui: preencha
+# as variáveis com os valores do seu `.env` (sandbox) na hora de usar.
+@base = http://localhost:3433
+@asaas = https://api-sandbox.asaas.com/v3
+@apiKey = COLE_AQUI_A_ASAAS_API_KEY
+@webhookToken = COLE_AQUI_O_ASAAS_WEBHOOK_TOKEN
+@publicUrl = https://SEU-TUNEL.ngrok-free.app
+@orderId = 00000000-0000-4000-8000-000000000000
+@chargeId = pay_000000000000
+
+### Instruções de pagamento de um pedido pendente (QR Pix, copia-e-cola, fatura)
+GET {{base}}/sponsorships/{{orderId}}/payment
+
+### Pedido (com Asaas, confere o status da cobrança no gateway antes de responder)
+GET {{base}}/sponsorships/{{orderId}}
+
+### Cadastra o webhook no Asaas (uma vez por ambiente; FR-07). `url` é a URL pública do backend.
+POST {{asaas}}/webhooks
+access_token: {{apiKey}}
+Content-Type: application/json
+
+{
+  "name": "Apuração Brutal — patrocínios",
+  "url": "{{publicUrl}}/webhooks/asaas",
+  "email": "seu-email@exemplo.com",
+  "enabled": true,
+  "interrupted": false,
+  "sendType": "SEQUENTIALLY",
+  "authToken": "{{webhookToken}}",
+  "events": ["PAYMENT_CONFIRMED", "PAYMENT_RECEIVED", "PAYMENT_REFUNDED"]
+}
+
+### Lista os webhooks cadastrados
+GET {{asaas}}/webhooks
+access_token: {{apiKey}}
+
+### (Apenas sandbox) simula o pagamento da cobrança de um pedido
+POST {{asaas}}/sandbox/payment/{{chargeId}}/confirm
+access_token: {{apiKey}}
+Content-Type: application/json
+
+{}
+
+### Status da cobrança no Asaas
+GET {{asaas}}/payments/{{chargeId}}/status
+access_token: {{apiKey}}
+
+### Exemplo de evento entregue pelo Asaas ao backend (para testar o endpoint localmente)
+POST {{base}}/webhooks/asaas
+asaas-access-token: {{webhookToken}}
+Content-Type: application/json
+
+{
+  "id": "evt_exemplo_local_1",
+  "event": "PAYMENT_RECEIVED",
+  "dateCreated": "2026-10-25 20:05:00",
+  "payment": {
+    "object": "payment",
+    "id": "{{chargeId}}",
+    "externalReference": "{{orderId}}",
+    "value": 10.00,
+    "billingType": "PIX",
+    "status": "RECEIVED"
+  }
+}
