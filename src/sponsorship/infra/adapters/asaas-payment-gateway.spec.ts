@@ -79,14 +79,36 @@ describe('AsaasPaymentGateway — spec asaas-payment R-3, R-4, R-7, R-8 (AC-12)'
     });
   });
 
-  it('reutiliza o cliente existente com o mesmo CPF/CNPJ', async () => {
+  it('reutiliza o cliente existente com o mesmo CPF/CNPJ, atualizando nome e e-mail do pedido', async () => {
     const { fn, calls } = fakeFetch({
       [`GET /customers?cpfCnpj=${TEST_CPF}&limit=1`]: { body: { data: [{ id: 'cus_old' }] } },
+      'PUT /customers/cus_old': { body: { id: 'cus_old' } },
       'POST /payments': { body: { id: 'pay_2' } },
     });
     const created = await new AsaasPaymentGateway(asaasConfig(), fn).createCharge(args);
     expect(created).toEqual({ chargeId: 'pay_2', customerId: 'cus_old', invoiceUrl: null });
-    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
+      `GET https://api-sandbox.asaas.com/v3/customers?cpfCnpj=${TEST_CPF}&limit=1`,
+      'PUT https://api-sandbox.asaas.com/v3/customers/cus_old',
+      'POST https://api-sandbox.asaas.com/v3/payments',
+    ]);
+    expect(calls[1].body).toEqual({ name: 'Padaria Central', email: 'contato@padaria.com.br' });
+    expect(calls[1].headers.access_token).toBe(asaasConfig().apiKey);
+  });
+
+  it('falha ao atualizar o cliente reencontrado vira GatewayError sem criar cobrança', async () => {
+    const { fn, calls } = fakeFetch({
+      [`GET /customers?cpfCnpj=${TEST_CPF}&limit=1`]: { body: { data: [{ id: 'cus_old' }] } },
+      'PUT /customers/cus_old': { status: 400, body: { errors: [{ code: 'invalid_email' }] } },
+      'POST /payments': { body: { id: 'pay_2' } },
+    });
+    const error = await new AsaasPaymentGateway(asaasConfig(), fn)
+      .createCharge(args)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GatewayError);
+    expect((error as Error).message).toContain('PUT /customers/cus_old');
+    expect((error as Error).message).not.toContain(TEST_CPF);
+    expect(calls.map((call) => call.method)).toEqual(['GET', 'PUT']);
   });
 
   it('usa a URL base de produção quando configurado', async () => {

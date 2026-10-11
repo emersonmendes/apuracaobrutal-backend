@@ -101,12 +101,21 @@ export class AsaasPaymentGateway implements PaymentGateway {
     await this.request('DELETE', `/payments/${encodeURIComponent(chargeId)}`);
   }
 
-  /** Reutiliza o cliente com o mesmo CPF/CNPJ; senão cria (asaas-payment R-3). */
+  /**
+   * Reutiliza o cliente com o mesmo CPF/CNPJ, atualizando nome e e-mail com os do pedido atual;
+   * senão cria (asaas-payment R-3).
+   */
   private async findOrCreateCustomer(args: CreateChargeArgs): Promise<string> {
     const query = `cpfCnpj=${encodeURIComponent(args.payer.cpfCnpj)}&limit=1`;
     const found = await this.request('GET', `/customers?${query}`);
     const first = Array.isArray(found.data) ? found.data[0] : undefined;
-    if (isObject(first) && typeof first.id === 'string') return first.id;
+    if (isObject(first) && typeof first.id === 'string') {
+      await this.request('PUT', `/customers/${encodeURIComponent(first.id)}`, {
+        name: args.payer.name,
+        email: args.payer.email,
+      });
+      return first.id;
+    }
 
     const created = await this.request('POST', '/customers', {
       name: args.payer.name,
@@ -125,7 +134,7 @@ export class AsaasPaymentGateway implements PaymentGateway {
    * mensagens levam só método e recurso, nunca a query string (pode carregar o CPF/CNPJ).
    */
   private async request(
-    method: 'GET' | 'POST' | 'DELETE',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     body?: Json,
   ): Promise<Json> {
