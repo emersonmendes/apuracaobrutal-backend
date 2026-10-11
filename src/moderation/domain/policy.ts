@@ -206,12 +206,12 @@ export function decide(signals: ImageSignals, context: DecisionContext): Verdict
     reasons.push('Texto da imagem contém instrução dirigida ao moderador (D-4).');
   }
 
-  // D-5 — termos eleitorais, nomes e números de urna.
+  // D-5 — termos eleitorais, nomes e números de urna (o motivo cita a linha original lida).
   const electoral = findElectoralText(normalizedLines, context.candidates);
   if (electoral !== null) {
     rules.push('D-5');
     categories = withCategory(categories, 'ELECTORAL_PROPAGANDA');
-    reasons.push(`Texto eleitoral: "${electoral}" (D-5).`);
+    reasons.push(`Texto eleitoral: "${signals.textLines[electoral].text}" (D-5).`);
   }
 
   // D-6 — rosto reconhecido de um dos dois candidatos.
@@ -234,24 +234,24 @@ export function decide(signals: ImageSignals, context: DecisionContext): Verdict
   return { outcome: 'approved', categories: [], rules: ['D-7'], confidence: null, reasons: [] };
 }
 
-/** Linha (original normalizada) que aciona D-5, ou `null`. */
+/** Índice da primeira linha que aciona D-5, ou `null`. */
 function findElectoralText(
   normalizedLines: readonly string[],
   candidates: readonly CandidateIdentityRef[],
-): string | null {
+): number | null {
   const names = candidates
     .map((candidate) => tokenize(normalizeText(candidate.ballotName)))
     .filter((tokens) => tokens.length > 0);
   const numbers = candidates.map((candidate) => String(candidate.number));
   const terms = ELECTORAL_TERMS.map((term) => tokenize(normalizeText(term)));
-  for (const line of normalizedLines) {
+  for (const [index, line] of normalizedLines.entries()) {
     const tokens = tokenize(line);
     if (
       terms.some((term) => containsTokenSequence(tokens, term)) ||
       names.some((name) => containsTokenSequence(tokens, name)) ||
       numbers.some((number) => tokens.includes(number))
     ) {
-      return line;
+      return index;
     }
   }
   return null;

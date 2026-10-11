@@ -143,7 +143,7 @@ describe('ModeratePendingSponsorships — spec sponsorship-image-moderation FR-0
     expect(s.repository.moderationRecords[0]).toMatchObject({
       outcome: 'rejected',
       rejectionRules: ['D-5'],
-      reasons: ['Texto eleitoral: "vote 13" (D-5).'],
+      reasons: ['Texto eleitoral: "VOTE 13" (D-5).'],
     });
     expect(s.logs[0]).not.toMatch(/vote 13|VOTE 13/);
   });
