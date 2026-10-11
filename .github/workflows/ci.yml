@@ -1,0 +1,64 @@
+# CI (spec apuracaobrutal-infra aws-production-deployment FR-09, R-7).
+# Merge em master NUNCA publica: lint/test/build e push da imagem ao ECR com a tag do SHA.
+# Criar uma tag `v*` (deploy.yml) é o único ato que publica. O worker usa esta mesma imagem
+# (só o comando muda), então não há imagem separada.
+#
+# Variável de repositório obrigatória: AWS_ACCOUNT_ID.
+
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: apuracaobrutal-backend
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: lint (só verificação)
+        run: npx eslint "{src,test}/**/*.ts"
+
+      - run: npm test
+
+      - run: npm run build
+
+  # O build Docker é o build de produção de verdade; push só em master (R-7: sem deploy).
+  build-image:
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/apuracaobrutal-prod-gha-backend
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - name: build e push :sha
+        env:
+          IMAGE: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"

@@ -1,0 +1,155 @@
+# Deploy em produção (spec apuracaobrutal-infra aws-production-deployment FR-09, Fluxos 2 e 5).
+# Disparado por uma tag `v*` (R-7) ou manualmente com uma tag existente para ROLLBACK (R-11).
+#
+# Ordem inegociável (R-9): `prisma migrate deploy` roda como task one-off do ECS e precisa sair
+# com 0 ANTES de atualizar o serviço backend. Em falha o deploy aborta e a produção continua na
+# versão antiga (expand/contract mantém o schema compatível, R-10). O worker sai sempre com a
+# MESMA imagem do backend (R-11, R-12).
+#
+# Variáveis de repositório obrigatórias: AWS_ACCOUNT_ID, PRIVATE_SUBNET_IDS (separadas por
+# vírgula), MIGRATE_SG_ID — valores do `terraform output` (README da infra).
+
+name: deploy
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag de versão existente para (re)publicar, ex.: v1.2.3 (rollback = tag anterior)"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: apuracaobrutal-backend
+  CLUSTER: apuracaobrutal-prod
+  BACKEND_SERVICE: apuracaobrutal-prod-backend
+  WORKER_SERVICE: apuracaobrutal-prod-worker
+  BACKEND_TASK_FAMILY: apuracaobrutal-prod-backend
+  WORKER_TASK_FAMILY: apuracaobrutal-prod-worker
+  MIGRATE_TASK_FAMILY: apuracaobrutal-prod-migrate
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: resolver versão
+        run: echo "VERSION=${{ github.event.inputs.version || github.ref_name }}" >> "$GITHUB_ENV"
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/apuracaobrutal-prod-gha-backend
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      # Prefere retaguear a imagem que o CI já construiu para este commit; constrói só se ausente.
+      - name: garantir a imagem da versão
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+               --image-ids imageTag="$VERSION" >/dev/null 2>&1; then
+            echo "imagem $VERSION já está no ECR"
+          elif aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+               --image-ids imageTag="${{ github.sha }}" >/dev/null 2>&1; then
+            MANIFEST=$(aws ecr batch-get-image --repository-name "$ECR_REPOSITORY" \
+              --image-ids imageTag="${{ github.sha }}" \
+              --query 'images[0].imageManifest' --output text)
+            aws ecr put-image --repository-name "$ECR_REPOSITORY" \
+              --image-tag "$VERSION" --image-manifest "$MANIFEST"
+          else
+            docker build -t "$REGISTRY/$ECR_REPOSITORY:$VERSION" .
+            docker push "$REGISTRY/$ECR_REPOSITORY:$VERSION"
+          fi
+
+      # --- Portão das migrations (R-9) -----------------------------------------------
+      - name: prisma migrate deploy (task one-off)
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          PRIVATE_SUBNET_IDS: ${{ vars.PRIVATE_SUBNET_IDS }}
+          MIGRATE_SG_ID: ${{ vars.MIGRATE_SG_ID }}
+        run: |
+          set -euo pipefail
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:$VERSION"
+
+          aws ecs describe-task-definition --task-definition "$MIGRATE_TASK_FAMILY" \
+            --query 'taskDefinition' > migrate-td.json
+          jq --arg IMG "$IMAGE" \
+            '.containerDefinitions[0].image = $IMG
+             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                   .compatibilities, .registeredAt, .registeredBy)' \
+            migrate-td.json > migrate-td-new.json
+          aws ecs register-task-definition --cli-input-json file://migrate-td-new.json
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --launch-type FARGATE \
+            --task-definition "$MIGRATE_TASK_FAMILY" \
+            --network-configuration "awsvpcConfiguration={subnets=[$PRIVATE_SUBNET_IDS],securityGroups=[$MIGRATE_SG_ID],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "task de migration: $TASK_ARN"
+
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          echo "exit code da migration: $EXIT_CODE"
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::prisma migrate deploy falhou - abortando antes do update-service (R-9)"
+            exit 1
+          fi
+
+      # --- serviço backend --------------------------------------------------------------
+      - name: registrar task definition do backend e atualizar o serviço
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:$VERSION"
+          aws ecs describe-task-definition --task-definition "$BACKEND_TASK_FAMILY" \
+            --query 'taskDefinition' > backend-td.json
+          jq --arg IMG "$IMAGE" \
+            '.containerDefinitions[0].image = $IMG
+             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                   .compatibilities, .registeredAt, .registeredBy)' backend-td.json > backend-td-new.json
+          aws ecs register-task-definition --cli-input-json file://backend-td-new.json
+          aws ecs update-service --cluster "$CLUSTER" --service "$BACKEND_SERVICE" \
+            --task-definition "$BACKEND_TASK_FAMILY"
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$BACKEND_SERVICE"
+
+      # --- serviço worker ---------------------------------------------------------------
+      # Mesma imagem do backend, só o `command` difere: nova revisão pinada à MESMA versão (R-11,
+      # R-12). Pulado apenas se o serviço estiver em 0 por pausa (R-16) — nunca em operação normal.
+      - name: registrar task definition do worker e atualizar o serviço
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          DESIRED=$(aws ecs describe-services --cluster "$CLUSTER" \
+            --services "$WORKER_SERVICE" \
+            --query 'services[0].desiredCount' --output text)
+          if [ "$DESIRED" = "0" ] || [ "$DESIRED" = "None" ]; then
+            echo "::warning::worker pausado (desired=$DESIRED) - imagem não atualizada; rode make aws-up e republique"
+            exit 0
+          fi
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:$VERSION"
+          aws ecs describe-task-definition --task-definition "$WORKER_TASK_FAMILY" \
+            --query 'taskDefinition' > worker-td.json
+          jq --arg IMG "$IMAGE" \
+            '.containerDefinitions[0].image = $IMG
+             | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                   .compatibilities, .registeredAt, .registeredBy)' worker-td.json > worker-td-new.json
+          aws ecs register-task-definition --cli-input-json file://worker-td-new.json
+          aws ecs update-service --cluster "$CLUSTER" --service "$WORKER_SERVICE" \
+            --task-definition "$WORKER_TASK_FAMILY"
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$WORKER_SERVICE"
