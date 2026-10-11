@@ -236,6 +236,8 @@ model Sponsorship {
   email                   String
   /// CPF/CNPJ do pagador, só dígitos (asaas-payment R-2); nulo em pedidos anteriores.
   cpfCnpj                 String?                   @map("cpf_cnpj")
+  /// Link opcional do anúncio, http(s) (sponsor-link R-1).
+  linkUrl                 String?                   @map("link_url")
   /// `null` depois que a limpeza do worker apaga a imagem (FR-05).
   imageKey                String?                   @map("image_key")
   /// SHA-256 (hex) do WebP gravado (sponsorship-image-moderation R-6); nulo em linhas antigas.

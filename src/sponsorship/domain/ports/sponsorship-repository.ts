@@ -39,6 +39,8 @@ export interface ScheduleItem {
   slot: SponsorshipSlot;
   startsAt: Date;
   endsAt: Date;
+  /** Link opcional do anúncio (sponsor-link R-2). */
+  linkUrl: string | null;
 }
 
 export interface ExpiredOrder {

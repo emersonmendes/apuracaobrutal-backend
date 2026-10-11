@@ -103,6 +103,21 @@ describe('CreateSponsorship — spec sponsorships FR-04, Fluxo 2', () => {
     expect(s.storage.files.get(`${created.id}.webp`)?.subarray(0, 5).toString()).toBe('WEBP:');
   });
 
+  it('link opcional do anúncio é gravado e exposto; ausente → null (sponsor-link R-1, R-2)', async () => {
+    const s = setup();
+    const linked = await s.create.execute(
+      input({ linkUrl: 'https://padaria.com.br/promo' }),
+      PNG_HEADER,
+    );
+    expect(linked.linkUrl).toBe('https://padaria.com.br/promo');
+    expect(s.repository.rows.get(linked.id)?.linkUrl).toBe('https://padaria.com.br/promo');
+    const plain = await s.create.execute(input(), PNG_HEADER);
+    expect(plain.linkUrl).toBeNull();
+    expect(await codeOf(s.create.execute(input({ linkUrl: 'ftp://x' }), PNG_HEADER))).toBe(
+      'invalid_link_url',
+    );
+  });
+
   it('mudar a config depois não altera o pedido gravado (AC-05)', async () => {
     const s = setup();
     const created = await s.create.execute(input(), PNG_HEADER);

@@ -135,11 +135,12 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
         startsAt: { lt: to },
       },
       orderBy: { startsAt: 'asc' },
-      select: { id: true, slot: true, startsAt: true, endsAt: true },
+      select: { id: true, slot: true, startsAt: true, endsAt: true, linkUrl: true },
     });
     return rows.map((row) => ({
       id: row.id,
       slot: row.slot,
+      linkUrl: row.linkUrl,
       startsAt: row.startsAt!,
       endsAt: row.endsAt!,
     }));

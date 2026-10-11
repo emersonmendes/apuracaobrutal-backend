@@ -107,7 +107,13 @@ export class InMemorySponsorshipRepository implements SponsorshipRepository {
           row.startsAt!.getTime() < to.getTime(),
       )
       .sort((a, b) => a.startsAt!.getTime() - b.startsAt!.getTime())
-      .map((row) => ({ id: row.id, slot: row.slot, startsAt: row.startsAt!, endsAt: row.endsAt! }));
+      .map((row) => ({
+        id: row.id,
+        slot: row.slot,
+        startsAt: row.startsAt!,
+        endsAt: row.endsAt!,
+        linkUrl: row.linkUrl,
+      }));
   }
 
   async expirePending(now: Date): Promise<ExpiredOrder[]> {

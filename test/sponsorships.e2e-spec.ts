@@ -108,6 +108,7 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
         amountCents: 600_000,
         status: 'pending_payment',
         paymentExpiresAt: '2026-10-25T23:30:00.000Z',
+        linkUrl: null,
         payment: { gateway: 'simulated', sandbox: true, method: null, refund: null },
         moderation: { status: 'pending', categories: [] },
       });
@@ -129,6 +130,26 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
     ])('%j → 400 %s (AC-02, AC-04)', async (override, code) => {
       const res = await post(validFields(override)).expect(400);
       expect(res.body).toEqual({ code });
+    });
+
+    it('link opcional: gravado e devolvido, ausente → null, inválido → 400 (sponsor-link AC-02, AC-03)', async () => {
+      const withLink = await post(
+        validFields({ linkUrl: ' https://padaria.com.br/promo ' }),
+      ).expect(201);
+      expect(withLink.body.linkUrl).toBe('https://padaria.com.br/promo');
+      const got = await request(f.app.getHttpServer())
+        .get(`/sponsorships/${withLink.body.id}`)
+        .expect(200);
+      expect(got.body.linkUrl).toBe('https://padaria.com.br/promo');
+      expect((await post(validFields()).expect(201)).body.linkUrl).toBeNull();
+      expect(
+        (await post(validFields({ linkUrl: 'javascript:alert(1)' })).expect(400)).body,
+      ).toEqual({
+        code: 'invalid_link_url',
+      });
+      expect((await post(validFields({ linkUrl: 'padaria.com.br' })).expect(400)).body).toEqual({
+        code: 'invalid_link_url',
+      });
     });
 
     it('sem minutos → invalid_minutes (AC-02)', async () => {
@@ -219,6 +240,8 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
       f.repository.rows.clear();
       const pending = await createOrder({ slot: 'side_left' });
       const a = await createOrder({ slot: 'side_right', minutes: '5' });
+      const linked = await createOrder({ slot: 'floor', minutes: '5', linkUrl: 'https://x.com/a' });
+      await pay(linked.id).expect(200);
       const b = await createOrder({ slot: 'side_right', minutes: '5' });
       const c = await createOrder({ slot: 'side_right', minutes: '5' });
       for (const { id } of [a, b, c]) await pay(id).expect(200);
@@ -230,14 +253,17 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
       expect(res.body.serverTime).toBe('2026-10-25T23:00:00.000Z');
       expect(res.body.items.map((item: { sponsorshipId: string }) => item.sponsorshipId)).toEqual([
         a.id,
+        linked.id,
         b.id,
       ]);
+      expect(res.body.items[1].linkUrl).toBe('https://x.com/a');
       expect(res.body.items[0]).toEqual({
         slot: 'side_right',
         sponsorshipId: a.id,
         imageUrl: expect.stringMatching(
           new RegExp(`^http://127\\.0\\.0\\.1:\\d+/sponsorships/${a.id}/image$`),
         ),
+        linkUrl: null,
         startsAt: '2026-10-25T23:00:00.000Z',
         endsAt: '2026-10-25T23:05:00.000Z',
       });
@@ -485,6 +511,11 @@ describe('Sponsorships — preço por período (e2e) — specs/sponsorship-elect
       'election_day',
     ]);
     expect(schemas.SponsorshipErrorDto.properties.code.enum).toContain('price_changed');
+    // sponsor-link FR-02
+    expect(schemas.SponsorshipErrorDto.properties.code.enum).toContain('invalid_link_url');
+    expect(schemas.PublicSponsorshipDto.properties).toHaveProperty('linkUrl');
+    expect(schemas.ScheduleItemDto.properties).toHaveProperty('linkUrl');
+    expect(schemas.CreateSponsorshipBodyDto.properties).toHaveProperty('linkUrl');
   });
 });
 

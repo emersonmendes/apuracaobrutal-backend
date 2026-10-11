@@ -39,6 +39,8 @@ export interface PublicSponsorship {
   paymentExpiresAt: Date;
   payment: PublicPayment;
   moderation: PublicModeration;
+  /** Link opcional do anúncio (sponsor-link R-2). */
+  linkUrl: string | null;
   confirmedAt?: Date;
   startsAt?: Date;
   endsAt?: Date;
@@ -72,6 +74,7 @@ export function toPublic(
       status: order.moderation,
       categories: order.moderation === 'rejected' ? [...order.moderationCategories] : [],
     },
+    linkUrl: order.linkUrl,
   };
   if (status !== 'scheduled' || !order.confirmedAt || !order.startsAt || !order.endsAt) return base;
   return {

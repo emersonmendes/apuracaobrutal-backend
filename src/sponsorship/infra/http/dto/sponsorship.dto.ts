@@ -109,6 +109,8 @@ export class PublicSponsorshipDto {
   @ApiProperty({ format: 'date-time' }) paymentExpiresAt!: string;
   @ApiProperty({ type: PaymentInfoDto }) payment!: PaymentInfoDto;
   @ApiProperty({ type: ModerationInfoDto }) moderation!: ModerationInfoDto;
+  @ApiProperty({ type: String, nullable: true, description: 'Link opcional do anúncio' })
+  linkUrl!: string | null;
   @ApiPropertyOptional({ format: 'date-time' }) confirmedAt?: string;
   @ApiPropertyOptional({ format: 'date-time' }) startsAt?: string;
   @ApiPropertyOptional({ format: 'date-time' }) endsAt?: string;
@@ -128,6 +130,11 @@ export class CreateSponsorshipBodyDto {
     description: 'CPF ou CNPJ do pagador, com ou sem pontuação (asaas-payment R-2)',
   })
   cpfCnpj!: string;
+  @ApiPropertyOptional({
+    example: 'https://padaria.com.br/promo',
+    description: 'Link opcional do anúncio, http(s) (sponsor-link R-1)',
+  })
+  linkUrl?: string;
   @ApiProperty({ example: 'true' }) acceptTerms!: string;
 }
 
@@ -154,6 +161,8 @@ export class ScheduleItemDto {
   @ApiProperty({ enum: SPONSORSHIP_SLOTS }) slot!: SponsorshipSlot;
   @ApiProperty({ format: 'uuid' }) sponsorshipId!: string;
   @ApiProperty({ format: 'uri' }) imageUrl!: string;
+  @ApiProperty({ type: String, nullable: true, format: 'uri', description: 'Link do anúncio' })
+  linkUrl!: string | null;
   @ApiProperty({ format: 'date-time' }) startsAt!: string;
   @ApiProperty({ format: 'date-time' }) endsAt!: string;
 }
@@ -173,6 +182,7 @@ export class SponsorshipErrorDto {
       'invalid_advertiser',
       'invalid_email',
       'invalid_cpf_cnpj',
+      'invalid_link_url',
       'terms_not_accepted',
       'expired',
       'price_changed',

@@ -19,6 +19,8 @@ export interface Sponsorship {
   email: string;
   /** Só dígitos (asaas-payment R-2); `null` em pedidos anteriores à cobrança real. */
   cpfCnpj: string | null;
+  /** Link opcional do anúncio (sponsor-link R-1). */
+  linkUrl: string | null;
   imageKey: string | null;
   /** SHA-256 (hex) do WebP gravado: a imagem analisada é a publicada (sponsorship-image-moderation R-6). */
   imageSha256: string | null;
@@ -73,6 +75,7 @@ export function newPendingOrder(args: {
     advertiserName: args.input.advertiserName,
     email: args.input.email,
     cpfCnpj: args.input.cpfCnpj,
+    linkUrl: args.input.linkUrl ?? null,
     imageKey: args.imageKey,
     imageSha256: args.imageSha256,
     status: 'pending_payment',

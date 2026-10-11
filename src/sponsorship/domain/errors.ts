@@ -7,6 +7,7 @@ export type ValidationErrorCode =
   | 'invalid_advertiser'
   | 'invalid_email'
   | 'invalid_cpf_cnpj'
+  | 'invalid_link_url'
   | 'terms_not_accepted';
 
 /** Erro de domínio do módulo; o filtro HTTP traduz o `code` para o status (FR-03). */

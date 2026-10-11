@@ -19,6 +19,7 @@ describe('validateOrderInput — spec sponsorships R-3, R-8 (AC-02, AC-04)', () 
         advertiserName: 'Padaria Central',
         email: 'contato@padaria.com.br',
         cpfCnpj: '52998224725',
+        linkUrl: null,
       },
     });
   });
@@ -40,6 +41,8 @@ describe('validateOrderInput — spec sponsorships R-3, R-8 (AC-02, AC-04)', () 
     [{ cpfCnpj: '529.982.247-26' }, 'invalid_cpf_cnpj'],
     [{ cpfCnpj: '111.111.111-11' }, 'invalid_cpf_cnpj'],
     [{ cpfCnpj: undefined }, 'invalid_cpf_cnpj'],
+    [{ linkUrl: 'exemplo.com' }, 'invalid_link_url'],
+    [{ linkUrl: 'javascript:alert(1)' }, 'invalid_link_url'],
     [{ acceptTerms: 'false' }, 'terms_not_accepted'],
     [{ acceptTerms: undefined }, 'terms_not_accepted'],
   ])('%j → %s', (override, code) => {
@@ -63,6 +66,27 @@ describe('validateOrderInput — spec sponsorships R-3, R-8 (AC-02, AC-04)', () 
     expect(validateOrderInput({ ...valid, cpfCnpj: '11.222.333/0001-81' }, 60)).toMatchObject({
       ok: true,
       value: { cpfCnpj: '11222333000181' },
+    });
+  });
+
+  it('link é opcional, validado depois do CPF/CNPJ e antes dos termos (sponsor-link R-1)', () => {
+    expect(
+      validateOrderInput({ ...valid, linkUrl: ' https://padaria.com.br/promo ' }, 60),
+    ).toMatchObject({
+      ok: true,
+      value: { linkUrl: 'https://padaria.com.br/promo' },
+    });
+    expect(validateOrderInput({ ...valid, linkUrl: '' }, 60)).toMatchObject({
+      ok: true,
+      value: { linkUrl: null },
+    });
+    expect(validateOrderInput({ ...valid, cpfCnpj: 'y', linkUrl: 'x' }, 60)).toEqual({
+      ok: false,
+      code: 'invalid_cpf_cnpj',
+    });
+    expect(validateOrderInput({ ...valid, linkUrl: 'x', acceptTerms: 'false' }, 60)).toEqual({
+      ok: false,
+      code: 'invalid_link_url',
     });
   });
 

@@ -95,6 +95,7 @@ export class SponsorshipsController {
         slot: item.slot,
         sponsorshipId: item.id,
         imageUrl: `${base}/sponsorships/${item.id}/image`,
+        linkUrl: item.linkUrl,
         startsAt: item.startsAt,
         endsAt: item.endsAt,
       })),
@@ -132,6 +133,7 @@ export class SponsorshipsController {
       advertiserName: body.advertiserName,
       email: body.email,
       cpfCnpj: body.cpfCnpj,
+      linkUrl: body.linkUrl,
       acceptTerms: body.acceptTerms,
     };
     return this.createSponsorship.execute(raw, image?.buffer);
