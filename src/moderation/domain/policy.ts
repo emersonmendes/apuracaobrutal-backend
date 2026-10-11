@@ -1,11 +1,12 @@
-// Política determinística de decisão v2.0 (spec sponsorship-image-moderation R-4). O provedor
+// Política determinística de decisão v2.1 (spec sponsorship-image-moderation R-4). O provedor
 // nunca decide: todo `ImageSignals` válido passa por D-1…D-7, em ordem, e todas as regras
 // acionadas ficam registradas. Puro — sem NestJS, Prisma nem SDK.
 import type { ModerationCategory } from './categories';
 import { categoryForLabel } from './label-map';
+import { PARTY_TERMS } from './party-terms';
 import type { ImageSignals, ModerationLabelSignal } from './signals';
 
-export const MODERATION_POLICY_VERSION = '2.0';
+export const MODERATION_POLICY_VERSION = '2.1';
 
 export type RuleId = 'D-1' | 'D-2' | 'D-3' | 'D-4' | 'D-5' | 'D-6' | 'D-7';
 
@@ -75,7 +76,12 @@ export interface Verdict {
 
 /** Sem acentos, minúsculo, espaços únicos. */
 export function normalizeText(text: string): string {
-  return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return stripAccents(text).toLowerCase();
+}
+
+/** Sem acentos e com espaços únicos, preservando a caixa (siglas ambíguas de partido, D-5). */
+export function stripAccents(text: string): string {
+  return text.normalize('NFD').replace(/\p{M}/gu, '').replace(/\s+/g, ' ').trim();
 }
 
 const EDGE_PUNCTUATION = /^[.,;:!?()"'«»[\]{}]+|[.,;:!?()"'«»[\]{}]+$/g;
@@ -197,6 +203,7 @@ export function decide(signals: ImageSignals, context: DecisionContext): Verdict
 
   // D-4 — instrução ao moderador dentro da imagem.
   const normalizedLines = signals.textLines.map((line) => normalizeText(line.text));
+  const caseLines = signals.textLines.map((line) => stripAccents(line.text));
   const injection = normalizedLines.find((line) =>
     INJECTION_PATTERNS.some((pattern) => pattern.test(line)),
   );
@@ -206,8 +213,8 @@ export function decide(signals: ImageSignals, context: DecisionContext): Verdict
     reasons.push('Texto da imagem contém instrução dirigida ao moderador (D-4).');
   }
 
-  // D-5 — termos eleitorais, nomes e números de urna (o motivo cita a linha original lida).
-  const electoral = findElectoralText(normalizedLines, context.candidates);
+  // D-5 — termos eleitorais, partidos, nomes e números de urna (o motivo cita a linha original lida).
+  const electoral = findElectoralText(normalizedLines, caseLines, context.candidates);
   if (electoral !== null) {
     rules.push('D-5');
     categories = withCategory(categories, 'ELECTORAL_PROPAGANDA');
@@ -237,6 +244,7 @@ export function decide(signals: ImageSignals, context: DecisionContext): Verdict
 /** Índice da primeira linha que aciona D-5, ou `null`. */
 function findElectoralText(
   normalizedLines: readonly string[],
+  caseLines: readonly string[],
   candidates: readonly CandidateIdentityRef[],
 ): number | null {
   const names = candidates
@@ -244,10 +252,20 @@ function findElectoralText(
     .filter((tokens) => tokens.length > 0);
   const numbers = candidates.map((candidate) => String(candidate.number));
   const terms = ELECTORAL_TERMS.map((term) => tokenize(normalizeText(term)));
+  const parties = PARTY_TERMS.filter((party) => !party.ambiguous).map((party) =>
+    tokenize(normalizeText(party.term)),
+  );
+  // Siglas que coincidem com palavra comum só valem em MAIÚSCULAS na linha original.
+  const upperParties = PARTY_TERMS.filter((party) => party.ambiguous).map((party) =>
+    tokenize(stripAccents(party.term).toUpperCase()),
+  );
   for (const [index, line] of normalizedLines.entries()) {
     const tokens = tokenize(line);
+    const caseTokens = tokenize(caseLines[index] ?? '');
     if (
       terms.some((term) => containsTokenSequence(tokens, term)) ||
+      parties.some((party) => containsTokenSequence(tokens, party)) ||
+      upperParties.some((party) => containsTokenSequence(caseTokens, party)) ||
       names.some((name) => containsTokenSequence(tokens, name)) ||
       numbers.some((number) => tokens.includes(number))
     ) {

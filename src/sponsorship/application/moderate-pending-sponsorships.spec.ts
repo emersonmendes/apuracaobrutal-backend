@@ -99,7 +99,7 @@ describe('ModeratePendingSponsorships — spec sponsorship-image-moderation FR-0
         attempt: 1,
         provider: 'rekognition',
         model: 'fake-model',
-        policyVersion: '2.0',
+        policyVersion: '2.1',
         outcome: 'approved',
         modelDecision: null,
         categories: [],

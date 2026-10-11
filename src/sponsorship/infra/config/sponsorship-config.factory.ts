@@ -139,6 +139,19 @@ function parseAsaasConfig(env: Env, problems: string[]): AsaasConfig {
  * sponsorship-election-pricing FR-01; asaas-payment FR-01). Qualquer valor inválido impede a
  * subida do processo.
  */
+/**
+ * `SPONSORSHIP_WORKER_ENABLED` (spec sponsorships FR-01, FR-05): só o worker lê. `false` desliga os
+ * laços de patrocínio (limpeza, estorno, moderação); padrão `true`; outro valor não sobe.
+ */
+export function parseSponsorshipWorkerEnabled(env: Env): boolean {
+  const raw = value(env, 'SPONSORSHIP_WORKER_ENABLED', 'true').toLowerCase();
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  throw new InvalidSponsorshipConfigError([
+    `SPONSORSHIP_WORKER_ENABLED deve ser "true" ou "false" (recebido: "${env.SPONSORSHIP_WORKER_ENABLED}")`,
+  ]);
+}
+
 export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
   const problems: string[] = [];
 

@@ -36,9 +36,9 @@ const signals = (overrides: Partial<ImageSignals> = {}): ImageSignals => ({
 
 const lines = (...texts: string[]) => texts.map((text) => ({ text, confidence: 99 }));
 
-describe('decide — spec sponsorship-image-moderation R-4 (política 2.0)', () => {
-  it('versão da política é 2.0', () => {
-    expect(MODERATION_POLICY_VERSION).toBe('2.0');
+describe('decide — spec sponsorship-image-moderation R-4 (política 2.1)', () => {
+  it('versão da política é 2.1', () => {
+    expect(MODERATION_POLICY_VERSION).toBe('2.1');
   });
 
   it('sem rótulos, sem texto eleitoral e sem rostos → approved D-7 (AC-03)', () => {
@@ -178,6 +178,39 @@ describe('decide — spec sponsorship-image-moderation R-4 (política 2.0)', () 
       expect(decide(signals({ textLines: lines(text) }), context).outcome).toBe('approved');
     },
   );
+
+  it.each([
+    'PT',
+    'PL 22',
+    'pt',
+    'PSDB',
+    'Movimento Democrático Brasileiro',
+    'Brasil da Esperança',
+    'NOVO',
+    'Vem aí a REDE',
+    'UNIÃO',
+  ])('D-5: partido em "%s" → rejected ELECTORAL_PROPAGANDA', (text) => {
+    expect(decide(signals({ textLines: lines(text) }), context)).toMatchObject({
+      outcome: 'rejected',
+      categories: ['ELECTORAL_PROPAGANDA'],
+      rules: ['D-5'],
+    });
+  });
+
+  it.each([
+    'Sabor novo na cidade',
+    'Pode entrar',
+    'Rede de lojas',
+    'Cidadania italiana',
+    'Up to 50%',
+    'Pizza PTA',
+  ])('D-5 não aciona em "%s" (sigla ambígua só em maiúsculas, palavra inteira)', (text) => {
+    expect(decide(signals({ textLines: lines(text) }), context).outcome).toBe('approved');
+  });
+
+  it('D-5: bandeira de partido sem texto legível passa (limitação declarada, R-1)', () => {
+    expect(decide(signals(), context).outcome).toBe('approved');
+  });
 
   it('D-5: os dois lados produzem o mesmo resultado (neutralidade); sem snapshot só os termos fixos', () => {
     const { reasons: leftReasons, ...left } = decide(

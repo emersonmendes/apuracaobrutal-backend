@@ -8,10 +8,17 @@ import { ModeratePendingSponsorships } from './sponsorship/application/moderate-
 import { runModerationLoop } from './sponsorship/application/moderation-loop';
 import { ProcessPaymentRefunds } from './sponsorship/application/process-payment-refunds';
 import { runRefundLoop } from './sponsorship/application/refund-loop';
+import { parseSponsorshipWorkerEnabled } from './sponsorship/infra/config/sponsorship-config.factory';
 import { SponsorshipWorkerModule } from './sponsorship/sponsorship-worker.module';
 
+// Com SPONSORSHIP_WORKER_ENABLED=false (spec sponsorships FR-05) o worker só acompanha a apuração:
+// a fila de patrocínios é única e deve ser atendida por uma só instância (dual-election-stack R-5).
+const sponsorshipWorker = parseSponsorshipWorkerEnabled(process.env);
+
 /** Contexto do worker: apuração (TSE) + limpeza, estornos e moderação de imagens de patrocínios. */
-@Module({ imports: [ElectionWorkerModule, SponsorshipWorkerModule] })
+@Module({
+  imports: [ElectionWorkerModule, ...(sponsorshipWorker ? [SponsorshipWorkerModule] : [])],
+})
 class WorkerModule {}
 
 /**
@@ -33,20 +40,29 @@ async function bootstrap() {
   }
 
   logger.log('worker iniciado');
-  await Promise.all([
-    app.get(PollOfficialResults).run(controller.signal),
-    runCleanupLoop(
-      app.get(ExpirePendingSponsorships),
-      controller.signal,
-      new Logger('SponsorshipCleanup'),
-    ),
-    runRefundLoop(app.get(ProcessPaymentRefunds), controller.signal, new Logger('PaymentRefunds')),
-    runModerationLoop(
-      app.get(ModeratePendingSponsorships),
-      controller.signal,
-      new Logger('ImageModeration'),
-    ),
-  ]);
+  const loops = [app.get(PollOfficialResults).run(controller.signal)];
+  if (sponsorshipWorker) {
+    loops.push(
+      runCleanupLoop(
+        app.get(ExpirePendingSponsorships),
+        controller.signal,
+        new Logger('SponsorshipCleanup'),
+      ),
+      runRefundLoop(
+        app.get(ProcessPaymentRefunds),
+        controller.signal,
+        new Logger('PaymentRefunds'),
+      ),
+      runModerationLoop(
+        app.get(ModeratePendingSponsorships),
+        controller.signal,
+        new Logger('ImageModeration'),
+      ),
+    );
+  } else {
+    logger.log('laços de patrocínio desligados (SPONSORSHIP_WORKER_ENABLED=false)');
+  }
+  await Promise.all(loops);
   await app.close();
   logger.log('worker encerrado');
 }

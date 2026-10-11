@@ -20,7 +20,7 @@ describe('ModerateImage — spec sponsorship-image-moderation FR-04, R-5', () =>
       provider: 'rekognition',
       model: 'fake-model',
       requestId: 'req_1',
-      policyVersion: '2.0',
+      policyVersion: '2.1',
       verdict: { rules: ['D-7'], reasons: [] },
       signals: { textLines: [{ text: 'Padaria Central', confidence: 99 }], wordCount: 2 },
     });

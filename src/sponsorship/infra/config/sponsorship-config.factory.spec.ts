@@ -1,7 +1,30 @@
 import {
   InvalidSponsorshipConfigError,
   parseSponsorshipConfig,
+  parseSponsorshipWorkerEnabled,
 } from './sponsorship-config.factory';
+
+describe('parseSponsorshipWorkerEnabled — spec sponsorships FR-01, FR-05 (AC-21)', () => {
+  it('ausente ou vazio → ligado', () => {
+    expect(parseSponsorshipWorkerEnabled({})).toBe(true);
+    expect(parseSponsorshipWorkerEnabled({ SPONSORSHIP_WORKER_ENABLED: ' ' })).toBe(true);
+  });
+
+  it('aceita true/false sem distinguir caixa', () => {
+    expect(parseSponsorshipWorkerEnabled({ SPONSORSHIP_WORKER_ENABLED: 'false' })).toBe(false);
+    expect(parseSponsorshipWorkerEnabled({ SPONSORSHIP_WORKER_ENABLED: 'FALSE' })).toBe(false);
+    expect(parseSponsorshipWorkerEnabled({ SPONSORSHIP_WORKER_ENABLED: 'True' })).toBe(true);
+  });
+
+  it('qualquer outro valor → erro citando a variável', () => {
+    expect(() => parseSponsorshipWorkerEnabled({ SPONSORSHIP_WORKER_ENABLED: 'off' })).toThrow(
+      InvalidSponsorshipConfigError,
+    );
+    expect(() => parseSponsorshipWorkerEnabled({ SPONSORSHIP_WORKER_ENABLED: '0' })).toThrow(
+      /SPONSORSHIP_WORKER_ENABLED/,
+    );
+  });
+});
 
 describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
   it('usa os padrões da spec', () => {
