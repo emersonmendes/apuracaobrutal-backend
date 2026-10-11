@@ -130,3 +130,51 @@ model SourceStatus {
 
   @@map("source_status")
 }
+
+// ---------------------------------------------------------------------------------------------
+// sponsorships (FR-02): pedidos de patrocínio por minuto. Nunca apagados (auditoria); preço
+// congelado no pedido (R-3).
+// ---------------------------------------------------------------------------------------------
+
+enum SponsorshipSlot {
+  side_left
+  side_right
+  center
+  floor
+  glove_red
+  glove_blue
+
+  @@map("sponsorship_slot")
+}
+
+enum SponsorshipStatus {
+  pending_payment
+  scheduled
+  expired
+
+  @@map("sponsorship_status")
+}
+
+/// Pedido de patrocínio (R-4). `startsAt`/`endsAt` só existem quando `scheduled` (R-5).
+model Sponsorship {
+  id               String            @id @db.Uuid
+  slot             SponsorshipSlot
+  minutes          Int
+  unitPriceCents   Int               @map("unit_price_cents")
+  amountCents      Int               @map("amount_cents")
+  advertiserName   String            @map("advertiser_name")
+  email            String
+  /// `null` depois que a limpeza do worker apaga a imagem (FR-05).
+  imageKey         String?           @map("image_key")
+  status           SponsorshipStatus
+  paymentGateway   String            @map("payment_gateway")
+  chargeId         String            @map("charge_id")
+  createdAt        DateTime          @map("created_at") @db.Timestamptz(3)
+  paymentExpiresAt DateTime          @map("payment_expires_at") @db.Timestamptz(3)
+  confirmedAt      DateTime?         @map("confirmed_at") @db.Timestamptz(3)
+  startsAt         DateTime?         @map("starts_at") @db.Timestamptz(3)
+  endsAt           DateTime?         @map("ends_at") @db.Timestamptz(3)
+
+  @@index([slot, status, endsAt])
+  @@map("sponsorship")
+}

@@ -22,6 +22,9 @@ COPY --from=build --chown=node:node /app/package.json ./package.json
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/prisma ./prisma
 COPY --from=build --chown=node:node /app/dist ./dist
+# Pasta das imagens de patrocínio (spec sponsorships FR-01): montada como volume pelo compose e
+# gravável pelo usuário `node`.
+RUN mkdir -p /app/storage/sponsorships && chown -R node:node /app/storage
 USER node
 EXPOSE 3433
 CMD ["node", "dist/main"]

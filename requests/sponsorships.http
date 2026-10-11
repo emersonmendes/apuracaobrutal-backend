@@ -1,0 +1,50 @@
+### Patrocínios na arena (spec: sponsorships FR-03)
+# Use com o "REST Client" do VS Code ou o HTTP Client do JetBrains. Pagamento SIMULADO.
+@base = http://localhost:3433
+
+### Oferta: preço por minuto e fila de cada local
+GET {{base}}/sponsorships/offer
+
+### Cria o pedido (multipart). Troque o caminho da imagem por um PNG/JPEG/WebP local.
+POST {{base}}/sponsorships
+Content-Type: multipart/form-data; boundary=ab
+
+--ab
+Content-Disposition: form-data; name="slot"
+
+center
+--ab
+Content-Disposition: form-data; name="minutes"
+
+2
+--ab
+Content-Disposition: form-data; name="advertiserName"
+
+Padaria Central
+--ab
+Content-Disposition: form-data; name="email"
+
+contato@exemplo.com
+--ab
+Content-Disposition: form-data; name="acceptTerms"
+
+true
+--ab
+Content-Disposition: form-data; name="image"; filename="logo.png"
+Content-Type: image/png
+
+< ./logo.png
+--ab--
+
+### Confirma o pagamento simulado (troque pelo id devolvido acima)
+@id = 00000000-0000-4000-8000-000000000000
+POST {{base}}/sponsorships/{{id}}/simulated-payment
+
+### Pedido público
+GET {{base}}/sponsorships/{{id}}
+
+### Agenda usada pela arena
+GET {{base}}/sponsorships/schedule
+
+### Imagem reprocessada (só de pedidos pagos)
+GET {{base}}/sponsorships/{{id}}/image

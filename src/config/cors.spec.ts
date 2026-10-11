@@ -33,11 +33,11 @@ describe('parseCorsOrigins — specs/backend-bootstrap', () => {
 });
 
 describe('buildCorsOptions — specs/backend-bootstrap', () => {
-  it('libera só a allow-list, sem credenciais e só GET/HEAD/OPTIONS', () => {
+  it('libera só a allow-list, sem credenciais e só GET/HEAD/OPTIONS/POST', () => {
     expect(buildCorsOptions(['http://a.test'])).toEqual({
       origin: ['http://a.test'],
       credentials: false,
-      methods: ['GET', 'HEAD', 'OPTIONS'],
+      methods: ['GET', 'HEAD', 'OPTIONS', 'POST'],
     });
   });
 });

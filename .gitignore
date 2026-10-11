@@ -6,3 +6,6 @@ coverage/
 
 # Prisma: o client gerado usa a saída padrão (node_modules/.prisma, já ignorada acima) e nunca
 # é editado à mão (spec: backend-bootstrap R-8). O schema e prisma/migrations/ SÃO versionados.
+
+# Imagens de patrocínio enviadas em desenvolvimento (spec: sponsorships FR-01).
+storage/

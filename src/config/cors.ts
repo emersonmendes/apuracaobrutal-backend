@@ -20,12 +20,12 @@ export function parseCorsOrigins(raw: string | undefined): string[] {
 
 /**
  * Opções de CORS: só origens da allow-list recebem headers, sem credenciais e apenas os métodos
- * usados nesta fase. Spec: /specs/backend-bootstrap (FR-05, R-6).
+ * usados (`POST` desde a spec sponsorships FR-03). Spec: /specs/backend-bootstrap (FR-05, R-6).
  */
 export function buildCorsOptions(origins: string[]): CorsOptions {
   return {
     origin: origins,
     credentials: false,
-    methods: ['GET', 'HEAD', 'OPTIONS'],
+    methods: ['GET', 'HEAD', 'OPTIONS', 'POST'],
   };
 }
