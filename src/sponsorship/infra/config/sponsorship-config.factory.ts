@@ -175,18 +175,6 @@ export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
   // Moderação automática (sponsorship-image-moderation FR-01).
   const maxAttempts = integer(env, 'SPONSORSHIP_MODERATION_MAX_ATTEMPTS', 3, 1, problems);
   if (maxAttempts > 5) problems.push('SPONSORSHIP_MODERATION_MAX_ATTEMPTS deve ser ≤ 5');
-  const rawConfidence = value(env, 'SPONSORSHIP_MODERATION_MIN_CONFIDENCE', '0.85');
-  const minConfidence = Number(rawConfidence);
-  if (
-    !/^\d+(\.\d+)?$/.test(rawConfidence) ||
-    !Number.isFinite(minConfidence) ||
-    minConfidence < 0.5 ||
-    minConfidence > 1
-  ) {
-    problems.push(
-      `SPONSORSHIP_MODERATION_MIN_CONFIDENCE deve ser um decimal entre 0.5 e 1 (recebido: "${rawConfidence}")`,
-    );
-  }
   const maxPerHour = integer(env, 'SPONSORSHIP_MODERATION_MAX_PER_HOUR', 200, 1, problems);
 
   if (problems.length > 0) throw new InvalidSponsorshipConfigError(problems);
@@ -203,6 +191,6 @@ export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
     imageMaxBytes,
     storageDir,
     createLimitPerHour,
-    moderation: { maxAttempts, minConfidence, maxPerHour },
+    moderation: { maxAttempts, maxPerHour },
   };
 }

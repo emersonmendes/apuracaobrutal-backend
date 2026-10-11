@@ -21,7 +21,7 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
       imageMaxBytes: 2_097_152,
       storageDir: './storage/sponsorships',
       createLimitPerHour: 10,
-      moderation: { maxAttempts: 3, minConfidence: 0.85, maxPerHour: 200 },
+      moderation: { maxAttempts: 3, maxPerHour: 200 },
     });
   });
 
@@ -29,10 +29,9 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
     expect(
       parseSponsorshipConfig({
         SPONSORSHIP_MODERATION_MAX_ATTEMPTS: '5',
-        SPONSORSHIP_MODERATION_MIN_CONFIDENCE: '0.9',
         SPONSORSHIP_MODERATION_MAX_PER_HOUR: '50',
       }).moderation,
-    ).toEqual({ maxAttempts: 5, minConfidence: 0.9, maxPerHour: 50 });
+    ).toEqual({ maxAttempts: 5, maxPerHour: 50 });
   });
 
   it('lê os valores do ambiente e marca produção', () => {
@@ -61,9 +60,6 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
     ['SPONSORSHIP_ELECTION_DATE', '2026-13-01'],
     ['SPONSORSHIP_MODERATION_MAX_ATTEMPTS', '0'],
     ['SPONSORSHIP_MODERATION_MAX_ATTEMPTS', '6'],
-    ['SPONSORSHIP_MODERATION_MIN_CONFIDENCE', '0.4'],
-    ['SPONSORSHIP_MODERATION_MIN_CONFIDENCE', '1.1'],
-    ['SPONSORSHIP_MODERATION_MIN_CONFIDENCE', 'alta'],
     ['SPONSORSHIP_MODERATION_MAX_PER_HOUR', '0'],
   ])('%s=%s impede a inicialização', (name, raw) => {
     expect(() => parseSponsorshipConfig({ [name]: raw })).toThrow(InvalidSponsorshipConfigError);

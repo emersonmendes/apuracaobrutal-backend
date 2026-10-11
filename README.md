@@ -28,7 +28,7 @@ npm install
 | `CORS_ORIGINS` | `http://localhost:3100` | Origens do navegador aceitas, separadas por vírgula (`*` é ignorado) |
 | `TSE_*`, `ELECTION_*`, `SOURCE_STALE_AFTER_SECONDS`, `FEED_REFRESH_MS`, `SSE_MAX_CLIENTS` | ver `.env.example` | Eleição acompanhada e feed ([spec election-results-feed FR-01](../specs/election-results-feed/spec.md)) |
 | `PAYMENT_GATEWAY`, `SPONSORSHIP_*`, `ASAAS_*` | ver `.env.example` | Patrocínios e pagamento ([sponsorships FR-01](../specs/sponsorships/spec.md), [asaas-payment FR-01](../specs/asaas-payment/spec.md)) |
-| `SPONSORSHIP_MODERATION`, `ANTHROPIC_*`, `SPONSORSHIP_MODERATION_*` | ver `.env.example` | Moderação automática das imagens ([sponsorship-image-moderation FR-01](../specs/sponsorship-image-moderation/spec.md)); ver seção abaixo |
+| `SPONSORSHIP_MODERATION`, `AWS_REGION`, `AWS_PROFILE`, `REKOGNITION_TIMEOUT_MS`, `SPONSORSHIP_MODERATION_*` | ver `.env.example` | Moderação automática das imagens ([sponsorship-image-moderation FR-01](../specs/sponsorship-image-moderation/spec.md)); ver seção abaixo |
 
 ## Rodar
 
@@ -57,39 +57,56 @@ Toda imagem de patrocínio é analisada pelo **worker** antes de poder ser paga 
 ([spec sponsorship-image-moderation](../specs/sponsorship-image-moderation/spec.md); regras em
 [rules.md](../specs/sponsorship-image-moderation/rules.md)). Não há revisão humana.
 
-- **Chave da API**: `ANTHROPIC_API_KEY` fica só no `.env` do worker. O backend HTTP não a lê e
-  sobe sem ela. Nunca versionar nem logar.
+- **Provedor**: Amazon Rekognition, três operações por tentativa — `DetectModerationLabels`
+  (rótulos de conteúdo impróprio), `DetectText` (texto lido) e `RecognizeCelebrities` (pessoas
+  públicas, comparadas só com os dois candidatos). O provedor não decide: o backend aplica a
+  política determinística da [R-4](../specs/sponsorship-image-moderation/rules.md#r-4--política-determinística-de-decisão-backend).
+  O que cada categoria cobre (e o que ficou sem cobertura) está na
+  [R-1](../specs/sponsorship-image-moderation/rules.md#r-1--política-de-conteúdo-e-cobertura).
+- **Credenciais**: só o worker. Em desenvolvimento, `AWS_PROFILE=puoro` (o Compose monta `~/.aws`
+  do host **somente leitura** em `/home/node/.aws` dos workers; nativo, o `.env` do backend aponta
+  o profile e o SDK lê o `~/.aws` do usuário). Em produção, IAM role do serviço com
+  `rekognition:DetectModerationLabels`, `rekognition:DetectText` e
+  `rekognition:RecognizeCelebrities` — sem chave estática. O backend HTTP não lê credenciais e sobe
+  sem elas. Credencial ausente ou sem permissão aparece como `provider_rejected` na auditoria.
 - **`SPONSORSHIP_MODERATION=simulated`** aprova tudo após 1 s, sem chamar a API — só para
-  desenvolvimento local sem chave. Com `NODE_ENV=production` o worker **não sobe** com esse valor.
-- **Modelo e custo**: `ANTHROPIC_MODERATION_MODEL` (padrão `claude-opus-5-5`), `ANTHROPIC_MODERATION_EFFORT`,
-  `ANTHROPIC_TIMEOUT_MS`, `SPONSORSHIP_MODERATION_MAX_ATTEMPTS`, `SPONSORSHIP_MODERATION_MIN_CONFIDENCE`
-  e `SPONSORSHIP_MODERATION_MAX_PER_HOUR` (teto global de chamadas por hora) — detalhes no
-  `.env.example`.
-- **Auditoria**: cada tentativa fica em `sponsorship_moderation_record` (decisão do modelo,
-  categorias, motivos, texto lido, confiança, regras determinísticas acionadas, erro, `request_id`,
-  latência e tokens). Nunca contém a chave nem dados do anunciante. Consultas úteis:
+  desenvolvimento local sem credenciais. Com `NODE_ENV=production` o worker **não sobe** com esse valor.
+- **Variáveis**: `AWS_REGION` (padrão `us-east-1`), `AWS_PROFILE`, `REKOGNITION_TIMEOUT_MS`,
+  `SPONSORSHIP_MODERATION_LABEL_MIN_CONFIDENCE` (padrão 60), `SPONSORSHIP_MODERATION_CELEBRITY_MIN_CONFIDENCE`
+  (padrão 90), `SPONSORSHIP_MODERATION_MAX_ATTEMPTS` e `SPONSORSHIP_MODERATION_MAX_PER_HOUR` (teto
+  global de tentativas por hora) — detalhes no `.env.example`.
+- **Auditoria**: cada tentativa fica em `sponsorship_moderation_record` (sinais normalizados em
+  `signals`: rótulos com confiança, tipos de conteúdo, linhas de texto, contagem de palavras,
+  saturação e pessoas reconhecidas; categorias, motivos gerados, texto lido, confiança, regras
+  acionadas, erro, `request_id`, latência). Nunca contém credenciais nem dados do anunciante.
+  Registros antigos com `provider = 'claude'` (v1) permanecem. Consultas úteis:
 
 ```sql
 -- Decisões por dia
 SELECT date_trunc('day', created_at) AS dia, outcome, count(*)
 FROM sponsorship_moderation_record GROUP BY 1, 2 ORDER BY 1 DESC;
--- Tokens (custo) por modelo nos últimos 7 dias
-SELECT model, sum(input_tokens) AS entrada, sum(output_tokens) AS saida, count(*) AS chamadas
+-- Tentativas por provedor nos últimos 7 dias (custo = tentativas × 3 chamadas; preço na tabela da AWS)
+SELECT provider, model, count(*) AS tentativas, round(avg(latency_ms)) AS latencia_ms
 FROM sponsorship_moderation_record
-WHERE created_at > now() - interval '7 days' AND provider = 'claude' GROUP BY model;
+WHERE created_at > now() - interval '7 days' GROUP BY provider, model;
 -- Falhas por código e latência média
 SELECT error_code, count(*), round(avg(latency_ms)) AS latencia_ms
 FROM sponsorship_moderation_record GROUP BY error_code ORDER BY 2 DESC;
 -- Por que um pedido foi recusado
-SELECT attempt, outcome, model_decision, categories, rejection_rules, confidence, reasons
+SELECT attempt, outcome, categories, rejection_rules, confidence, reasons
 FROM sponsorship_moderation_record WHERE sponsorship_id = '<id>' ORDER BY attempt;
+-- Calibração (AC-23): confiança de cada rótulo devolvido × decisão
+SELECT r.outcome, l->>'name' AS rotulo, round((l->>'confidence')::numeric) AS confianca
+FROM sponsorship_moderation_record r, jsonb_array_elements(r.signals->'labels') l
+ORDER BY rotulo, confianca DESC;
 ```
 
-- **Calibração do limite de confiança** (spec AC-22): com a chave real, envie pelo menos 10
-  imagens comerciais legítimas e 10 proibidas (uma por categoria quando possível) pela página
-  `/sponsor`, leia `confidence` e `outcome` na tabela acima e confirme que `0.85` não aprova
-  nenhuma proibida; se aprovações legítimas ficarem abaixo do limite, ajuste
-  `SPONSORSHIP_MODERATION_MIN_CONFIDENCE` e anote o resultado na spec.
+- **Calibração dos limiares** (spec AC-23): com credenciais reais, envie pelo menos 10 imagens
+  comerciais legítimas e 10 proibidas (rótulos, texto eleitoral e rosto de candidato) pela página
+  `/sponsor`, leia `signals`, `rejection_rules` e `outcome` com as consultas acima e confirme que os
+  limiares 60 (rótulo) e 90 (rosto) não aprovam nenhuma proibida; se legítimas forem recusadas em
+  excesso, ajuste `SPONSORSHIP_MODERATION_LABEL_MIN_CONFIDENCE` / `..._CELEBRITY_MIN_CONFIDENCE` e
+  anote o resultado na spec.
 
 ## Testes e lint
 

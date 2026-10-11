@@ -1,5 +1,5 @@
 import type { AsaasConfig, SponsorshipConfig } from '../../domain/sponsorship-config';
-import type { CandidateNames } from '../../domain/ports/candidate-names';
+import type { CandidateIdentity, CandidateRef } from '../../domain/ports/candidate-identity';
 import type { Clock } from '../../domain/ports/clock';
 
 export const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]);
@@ -35,7 +35,7 @@ export function testConfig(overrides: Partial<SponsorshipConfig> = {}): Sponsors
     imageMaxBytes: 2_097_152,
     storageDir: '/tmp/unused',
     createLimitPerHour: 10,
-    moderation: { maxAttempts: 3, minConfidence: 0.85, maxPerHour: 200 },
+    moderation: { maxAttempts: 3, maxPerHour: 200 },
     ...overrides,
   };
 }
@@ -56,10 +56,15 @@ export class FakeClock implements Clock {
   }
 }
 
-/** Nomes de urna falsos (sponsorship-image-moderation D-6). */
-export class FakeCandidateNames implements CandidateNames {
-  constructor(public names: string[] = ['Lula', 'Flávio Bolsonaro']) {}
-  async ballotNames(): Promise<string[]> {
-    return [...this.names];
+/** Identidade falsa dos dois lados (sponsorship-image-moderation D-5, D-6). */
+export const TEST_CANDIDATES: CandidateRef[] = [
+  { ballotName: 'Lula', number: 13 },
+  { ballotName: 'Flávio Bolsonaro', number: 22 },
+];
+
+export class FakeCandidateIdentity implements CandidateIdentity {
+  constructor(public list: CandidateRef[] = TEST_CANDIDATES) {}
+  async candidates(): Promise<CandidateRef[]> {
+    return this.list.map((c) => ({ ...c }));
   }
 }

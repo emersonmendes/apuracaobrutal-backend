@@ -1,26 +1,24 @@
-import { FakeImageAnalyzer } from '../../moderation/application/__fakes__/fake-image-analyzer';
+import {
+  FakeImageAnalyzer,
+  rawCelebrity,
+  rawLabel,
+  rawSignals,
+} from '../../moderation/application/__fakes__/fake-image-analyzer';
 import { ModerateImage } from '../../moderation/application/moderate-image';
-import { MODERATION_POLICY_VERSION } from '../../moderation/domain/contract';
 import { sha256Hex } from '../domain/image-rules';
 import { newPendingOrder } from '../domain/scheduling';
 import { ModeratePendingSponsorships } from './moderate-pending-sponsorships';
 import { FakePaymentGateway } from './__fakes__/fake-payment-gateway';
-import { FakeCandidateNames, FakeClock, TEST_CPF, testConfig } from './__fakes__/fixtures';
+import { FakeCandidateIdentity, FakeClock, TEST_CPF, testConfig } from './__fakes__/fixtures';
 import { InMemoryImageStorage } from './__fakes__/in-memory-image-storage';
 import { InMemorySponsorshipRepository } from './__fakes__/in-memory-sponsorship-repository';
 
 const IMAGE = Buffer.from('WEBP:imagem-de-teste');
 const TIMEOUT_MS = 1_000;
 
-const ok = (overrides: Record<string, unknown> = {}) => ({
-  decision: 'APPROVE',
-  categories: [],
-  detected_text: ['Padaria Central'],
-  reasons: ['Publicidade comercial.'],
-  confidence: 0.97,
-  policy_version: MODERATION_POLICY_VERSION,
-  ...overrides,
-});
+const ok = (parts: Parameters<typeof rawSignals>[0] = {}) =>
+  rawSignals({ lines: ['Padaria Central'], ...parts });
+const RUNTIME = { timeoutMs: TIMEOUT_MS, labelMinConfidence: 60, celebrityMinConfidence: 90 };
 
 function setup(options: { gateway?: 'simulated' | 'asaas'; maxPerHour?: number } = {}) {
   const repository = new InMemorySponsorshipRepository();
@@ -29,7 +27,7 @@ function setup(options: { gateway?: 'simulated' | 'asaas'; maxPerHour?: number }
   const gateway = new FakePaymentGateway(options.gateway ?? 'simulated');
   const clock = new FakeClock();
   const config = testConfig({
-    moderation: { maxAttempts: 3, minConfidence: 0.85, maxPerHour: options.maxPerHour ?? 200 },
+    moderation: { maxAttempts: 3, maxPerHour: options.maxPerHour ?? 200 },
   });
   const logs: string[] = [];
   const warnings: string[] = [];
@@ -63,11 +61,11 @@ function setup(options: { gateway?: 'simulated' | 'asaas'; maxPerHour?: number }
     repository,
     storage,
     new ModerateImage(analyzer, TIMEOUT_MS),
-    new FakeCandidateNames(),
+    new FakeCandidateIdentity(),
     gateway,
     clock,
     config,
-    TIMEOUT_MS,
+    RUNTIME,
     { log: (m) => logs.push(m), warn: (m) => warnings.push(m) },
   );
   return { repository, storage, analyzer, gateway, clock, logs, warnings, addOrder, useCase };
@@ -83,13 +81,10 @@ describe('ModeratePendingSponsorships — spec sponsorship-image-moderation FR-0
   it('aprova: registro de auditoria completo, status intacto, imagem mantida (AC-14, AC-16)', async () => {
     const s = setup();
     const order = await s.addOrder();
-    s.analyzer.respond(JSON.stringify(ok()));
+    s.analyzer.respond(ok());
     expect(await s.useCase.execute()).toEqual({ processed: 1, outcome: 'approved' });
 
-    expect(s.analyzer.calls[0]).toMatchObject({
-      mediaType: 'image/webp',
-      placement: 'faixa horizontal central do fundo da arena',
-    });
+    expect(s.analyzer.calls[0]).toEqual({ image: IMAGE, mediaType: 'image/webp' });
     expect(s.repository.rows.get(order.id)).toMatchObject({
       moderation: 'approved',
       moderationAttempts: 1,
@@ -102,34 +97,39 @@ describe('ModeratePendingSponsorships — spec sponsorship-image-moderation FR-0
       expect.objectContaining({
         sponsorshipId: order.id,
         attempt: 1,
-        provider: 'claude',
+        provider: 'rekognition',
         model: 'fake-model',
-        policyVersion: '1.0',
+        policyVersion: '2.0',
         outcome: 'approved',
-        modelDecision: 'APPROVE',
+        modelDecision: null,
         categories: [],
-        reasons: ['Publicidade comercial.'],
+        reasons: [],
         detectedText: ['Padaria Central'],
-        confidence: 0.97,
-        rejectionRules: ['D-8'],
+        confidence: null,
+        rejectionRules: ['D-7'],
         errorCode: null,
         requestId: 'req_1',
         imageSha256: sha256Hex(IMAGE),
-        inputTokens: 1500,
-        outputTokens: 120,
+        inputTokens: null,
+        outputTokens: null,
+        signals: expect.objectContaining({
+          textLines: [{ text: 'Padaria Central', confidence: 99 }],
+          wordCount: 2,
+          labels: [],
+          celebrities: [],
+        }),
       }),
     ]);
     expect(s.storage.files.has(`${order.id}.webp`)).toBe(true);
     expect(s.logs[0]).toMatch(/approved/);
-    expect(s.logs[0]).not.toMatch(/Padaria Central|Publicidade comercial/);
+    expect(s.logs[0]).toMatch(/labels=0 lines=1 faces=0/);
+    expect(s.logs[0]).not.toMatch(/Padaria Central/);
   });
 
   it('recusa: expira, grava categorias, apaga a imagem e cancela a cobrança asaas (AC-14)', async () => {
     const s = setup({ gateway: 'asaas' });
     const order = await s.addOrder();
-    s.analyzer.respond(
-      ok({ decision: 'REJECT', categories: ['ELECTORAL_PROPAGANDA'], detected_text: ['VOTE 13'] }),
-    );
+    s.analyzer.respond(ok({ lines: ['VOTE 13'] }));
     expect(await s.useCase.execute()).toEqual({ processed: 1, outcome: 'rejected' });
     expect(s.repository.rows.get(order.id)).toMatchObject({
       moderation: 'rejected',
@@ -142,22 +142,38 @@ describe('ModeratePendingSponsorships — spec sponsorship-image-moderation FR-0
     expect(s.gateway.cancelled).toEqual([order.chargeId]);
     expect(s.repository.moderationRecords[0]).toMatchObject({
       outcome: 'rejected',
-      rejectionRules: ['D-1', 'D-2', 'D-3', 'D-6'],
+      rejectionRules: ['D-5'],
+      reasons: ['Texto eleitoral: "vote 13" (D-5).'],
     });
+    expect(s.logs[0]).not.toMatch(/vote 13|VOTE 13/);
   });
 
-  it('modelo aprova mas o backend recusa (D-6): registro guarda APPROVE e as regras (AC-05)', async () => {
+  it('rótulo acima do limiar e rosto de candidato recusam com sinais na auditoria (AC-16)', async () => {
     const s = setup();
     const order = await s.addOrder();
-    s.analyzer.respond(ok({ detected_text: ['Apoie o Lula'], confidence: 1 }));
+    s.analyzer.respond(
+      ok({
+        labels: [rawLabel('Explicit', 97.5)],
+        celebrities: [rawCelebrity('Luiz Inácio Lula da Silva', 96)],
+      }),
+    );
     await s.useCase.execute();
-    expect(s.repository.rows.get(order.id)!.moderation).toBe('rejected');
+    expect(s.repository.rows.get(order.id)).toMatchObject({
+      moderation: 'rejected',
+      moderationCategories: ['SEXUAL_CONTENT', 'ELECTORAL_PROPAGANDA'],
+    });
     expect(s.repository.moderationRecords[0]).toMatchObject({
       outcome: 'rejected',
-      modelDecision: 'APPROVE',
-      categories: ['ELECTORAL_PROPAGANDA'],
-      rejectionRules: ['D-6'],
+      modelDecision: null,
+      categories: ['SEXUAL_CONTENT', 'ELECTORAL_PROPAGANDA'],
+      rejectionRules: ['D-2', 'D-6'],
+      confidence: 0.975,
+      signals: expect.objectContaining({
+        labels: [{ name: 'Explicit', parentName: null, taxonomyLevel: 1, confidence: 97.5 }],
+        celebrities: [{ name: 'Luiz Inácio Lula da Silva', id: 'id', matchConfidence: 96 }],
+      }),
     });
+    expect(s.logs[0]).not.toMatch(/Lula/);
   });
 
   it('falhas técnicas: backoff, contagem e erro definitivo na 3ª; nunca aprova (AC-06, 30)', async () => {
@@ -191,7 +207,7 @@ describe('ModeratePendingSponsorships — spec sponsorship-image-moderation FR-0
     });
 
     s.clock.advance(60_000);
-    s.analyzer.respond('não é json');
+    s.analyzer.respond('não é objeto');
     expect(await s.useCase.execute()).toEqual({ processed: 1, outcome: 'error' });
     expect(s.repository.rows.get(order.id)).toMatchObject({
       moderation: 'error',
@@ -224,17 +240,6 @@ describe('ModeratePendingSponsorships — spec sponsorship-image-moderation FR-0
     const waiting = [...s.repository.rows.values()].find((r) => r.moderation === 'pending')!;
     expect(waiting.moderationClaimedUntil).toBeNull();
     expect(waiting.moderationAttempts).toBe(0);
-  });
-
-  it('refusal do provedor → recusa terminal sem retentativa (AC-09)', async () => {
-    const s = setup();
-    const order = await s.addOrder();
-    s.analyzer.refuse();
-    expect(await s.useCase.execute()).toEqual({ processed: 1, outcome: 'rejected' });
-    expect(s.repository.rows.get(order.id)).toMatchObject({
-      moderation: 'rejected',
-      moderationCategories: ['OTHER_POLICY_VIOLATION'],
-    });
   });
 
   it('arquivo ≠ hash → image_mismatch sem chamar a API (AC-10, cenário 25)', async () => {
@@ -303,7 +308,7 @@ describe('ModeratePendingSponsorships — spec sponsorship-image-moderation FR-0
     const order = await s.addOrder();
     s.storage.failingKeys.add(order.imageKey!);
     s.gateway.failAlways.add('cancelCharge');
-    s.analyzer.respond(ok({ decision: 'REJECT', categories: ['SEXUAL_CONTENT'] }));
+    s.analyzer.respond(ok({ labels: [rawLabel('Explicit', 99)] }));
     expect(await s.useCase.execute()).toEqual({ processed: 1, outcome: 'rejected' });
     expect(s.repository.rows.get(order.id)!.moderation).toBe('rejected');
     expect(s.warnings).toHaveLength(2);

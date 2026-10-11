@@ -287,7 +287,15 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
         SELECT id FROM sponsorship WHERE id = ${id}::uuid FOR UPDATE`;
       if (locked.length === 0) return 'order_changed' as const;
       const row = await tx.sponsorship.findUniqueOrThrow({ where: { id } });
-      await tx.sponsorshipModerationRecord.create({ data: { sponsorshipId: id, ...record } });
+      const { signals, ...fields } = record;
+      await tx.sponsorshipModerationRecord.create({
+        data: {
+          sponsorshipId: id,
+          ...fields,
+          // JSON do Prisma: `null` em JS vira `DbNull` (coluna nula), não o JSON `null`.
+          signals: signals === null ? Prisma.DbNull : (signals as unknown as Prisma.InputJsonValue),
+        },
+      });
       if (row.moderation !== 'pending' || row.status !== 'pending_payment') {
         return 'order_changed' as const;
       }

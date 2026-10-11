@@ -5,7 +5,7 @@ import {
   isFinalRejection,
   type ModerationAttemptOutcome,
 } from '../domain/moderation-state';
-import type { CandidateNames } from '../domain/ports/candidate-names';
+import type { CandidateIdentity } from '../domain/ports/candidate-identity';
 import type { Clock } from '../domain/ports/clock';
 import type { PaymentGateway } from '../domain/ports/payment-gateway';
 import type { SponsorImageStorage } from '../domain/ports/sponsor-image-storage';
@@ -13,7 +13,6 @@ import type {
   ModerationRecordInput,
   SponsorshipRepository,
 } from '../domain/ports/sponsorship-repository';
-import { slotPlacement } from '../domain/slots';
 import type { SponsorshipConfig } from '../domain/sponsorship-config';
 
 const HOUR_MS = 60 * 60_000;
@@ -21,6 +20,13 @@ const HOUR_MS = 60 * 60_000;
 interface Logger {
   log(message: string): void;
   warn(message: string): void;
+}
+
+/** Parâmetros do analisador repassados ao caso de uso (sponsorship-image-moderation FR-01, R-4). */
+export interface ModerationRuntime {
+  timeoutMs: number;
+  labelMinConfidence: number;
+  celebrityMinConfidence: number;
 }
 
 export interface ModerationRunResult {
@@ -40,11 +46,11 @@ export class ModeratePendingSponsorships {
     private readonly repository: SponsorshipRepository,
     private readonly storage: SponsorImageStorage,
     private readonly moderate: ModerateImage,
-    private readonly names: CandidateNames,
+    private readonly identity: CandidateIdentity,
     private readonly gateway: PaymentGateway,
     private readonly clock: Clock,
     private readonly config: SponsorshipConfig,
-    private readonly timeoutMs: number,
+    private readonly runtime: ModerationRuntime,
     private readonly logger: Logger,
   ) {}
 
@@ -52,12 +58,12 @@ export class ModeratePendingSponsorships {
     const now = this.clock.now();
     const order = await this.repository.claimForModeration(
       now,
-      new Date(now.getTime() + 2 * this.timeoutMs),
+      new Date(now.getTime() + 2 * this.runtime.timeoutMs),
     );
     if (!order) return { processed: 0 };
 
     const provider = this.moderate.providerName;
-    const { maxPerHour, maxAttempts, minConfidence } = this.config.moderation;
+    const { maxPerHour, maxAttempts } = this.config.moderation;
     const calls = await this.repository.moderationCallsSince(
       provider,
       new Date(now.getTime() - HOUR_MS),
@@ -90,9 +96,11 @@ export class ModeratePendingSponsorships {
       latencyMs: 0,
       inputTokens: null,
       outputTokens: null,
+      signals: null,
       createdAt: now,
     };
     let result: ModerationAttemptOutcome;
+    let counts = 'labels=- lines=- faces=-';
 
     const bytes = order.imageKey ? await this.storage.read(order.imageKey) : null;
     if (!bytes) {
@@ -106,35 +114,38 @@ export class ModeratePendingSponsorships {
       record.imageSha256 = sha256Hex(bytes);
     } else {
       const attemptResult = await this.moderate.execute(
-        { image: bytes, mediaType: 'image/webp', placement: slotPlacement(order.slot) },
-        { minConfidence, ballotNames: await this.names.ballotNames() },
+        { image: bytes, mediaType: 'image/webp' },
+        {
+          labelMinConfidence: this.runtime.labelMinConfidence,
+          celebrityMinConfidence: this.runtime.celebrityMinConfidence,
+          candidates: await this.identity.candidates(),
+        },
       );
       Object.assign(record, {
         model: attemptResult.model,
         policyVersion: attemptResult.policyVersion,
         requestId: attemptResult.requestId,
         latencyMs: attemptResult.latencyMs,
-        inputTokens: attemptResult.inputTokens,
-        outputTokens: attemptResult.outputTokens,
       });
       if (attemptResult.outcome === 'error') {
         result = { outcome: 'error', errorCode: attemptResult.errorCode };
         record.errorCode = attemptResult.errorCode;
       } else {
-        const { verdict, response } = attemptResult;
+        const { verdict, signals } = attemptResult;
         result =
           verdict.outcome === 'approved'
             ? { outcome: 'approved' }
             : { outcome: 'rejected', categories: verdict.categories };
         Object.assign(record, {
           outcome: verdict.outcome,
-          modelDecision: verdict.modelDecision,
           categories: verdict.categories,
-          reasons: response?.reasons ?? [],
-          detectedText: response?.detectedText ?? [],
+          reasons: verdict.reasons,
+          detectedText: signals.textLines.map((line) => line.text),
           confidence: verdict.confidence,
           rejectionRules: verdict.rules,
+          signals,
         });
+        counts = `labels=${signals.labels.length} lines=${signals.textLines.length} faces=${signals.celebrities.length}`;
       }
     }
     if (record.latencyMs === 0) record.latencyMs = Date.now() - startedAt;
@@ -147,12 +158,12 @@ export class ModeratePendingSponsorships {
         : writes.moderation === 'pending'
           ? 'retry'
           : writes.moderation;
-    // Sem texto detectado, motivos, imagem ou dados pessoais no log (R-8).
+    // Sem texto detectado, nomes, motivos, imagem ou dados pessoais no log (R-8).
     this.logger.log(
       `moderação ${order.id} tentativa ${attempt}: ${outcome}` +
         ` categorias=[${record.categories.join(',')}] regras=[${record.rejectionRules.join(',')}]` +
-        ` erro=${record.errorCode ?? '-'} latência=${record.latencyMs}ms` +
-        ` tokens=${record.inputTokens ?? '-'}/${record.outputTokens ?? '-'} req=${record.requestId ?? '-'}`,
+        ` erro=${record.errorCode ?? '-'} latência=${record.latencyMs}ms ${counts}` +
+        ` req=${record.requestId ?? '-'}`,
     );
 
     if (applied === 'applied' && isFinalRejection(writes)) await this.cleanup(order);

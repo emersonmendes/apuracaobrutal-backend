@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ModerateImage } from './application/moderate-image';
 import { IMAGE_ANALYZER, type ImageAnalyzer } from './domain/ports/image-analyzer';
-import { ClaudeImageAnalyzer } from './infra/adapters/claude-image-analyzer';
+import { RekognitionImageAnalyzer } from './infra/adapters/rekognition-image-analyzer';
 import { SimulatedImageAnalyzer } from './infra/adapters/simulated-image-analyzer';
 import {
   MODERATION_CONFIG,
@@ -11,7 +11,7 @@ import {
 
 /**
  * Moderação automática de imagens (spec sponsorship-image-moderation FR-04). Só o worker importa
- * este módulo: o backend HTTP nunca lê a chave da API (FR-01).
+ * este módulo: o backend HTTP nunca lê credenciais da AWS (FR-01).
  */
 @Module({
   providers: [
@@ -19,8 +19,12 @@ import {
     {
       provide: IMAGE_ANALYZER,
       useFactory: (config: ModerationConfig): ImageAnalyzer =>
-        config.analyzer === 'claude'
-          ? new ClaudeImageAnalyzer(config)
+        config.analyzer === 'rekognition'
+          ? new RekognitionImageAnalyzer({
+              region: config.region,
+              profile: config.profile,
+              timeoutMs: config.timeoutMs,
+            })
           : new SimulatedImageAnalyzer(),
       inject: [MODERATION_CONFIG],
     },

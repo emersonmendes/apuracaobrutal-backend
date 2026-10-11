@@ -1,24 +1,15 @@
-// Política determinística de decisão (spec sponsorship-image-moderation R-4). O modelo nunca
-// aprova sozinho: toda resposta válida passa por D-1…D-8, em ordem, e todas as regras acionadas
-// ficam registradas. Puro — sem NestJS, Prisma nem SDK.
+// Política determinística de decisão v2.0 (spec sponsorship-image-moderation R-4). O provedor
+// nunca decide: todo `ImageSignals` válido passa por D-1…D-7, em ordem, e todas as regras
+// acionadas ficam registradas. Puro — sem NestJS, Prisma nem SDK.
 import type { ModerationCategory } from './categories';
-import { MODERATION_POLICY_VERSION, type ModelDecision, type ModerationResponse } from './contract';
+import { categoryForLabel } from './label-map';
+import type { ImageSignals, ModerationLabelSignal } from './signals';
 
-export { MODERATION_POLICY_VERSION };
+export const MODERATION_POLICY_VERSION = '2.0';
 
-export type RuleId = 'D-1' | 'D-2' | 'D-3' | 'D-4' | 'D-5' | 'D-6' | 'D-7' | 'D-8';
+export type RuleId = 'D-1' | 'D-2' | 'D-3' | 'D-4' | 'D-5' | 'D-6' | 'D-7';
 
-/** Categorias de recusa obrigatória (D-2): confiança alta nunca as substitui. */
-export const MANDATORY_REJECTION_CATEGORIES: readonly ModerationCategory[] = [
-  'SEXUAL_CONTENT',
-  'HATE_OR_DISCRIMINATION',
-  'THREAT_OR_VIOLENCE',
-  'GRAPHIC_VIOLENCE',
-  'ELECTORAL_PROPAGANDA',
-  'POLITICAL_ATTACK',
-];
-
-/** Padrões de instrução ao moderador dentro da imagem (D-5), sobre texto normalizado. */
+/** Padrões de instrução ao moderador dentro da imagem (D-4), sobre texto normalizado. */
 export const INJECTION_PATTERNS: readonly RegExp[] = [
   /ignore (as |todas as |suas )?(instrucoes|regras)/,
   /system prompt/,
@@ -31,7 +22,7 @@ export const INJECTION_PATTERNS: readonly RegExp[] = [
   /jailbreak/,
 ];
 
-/** Termos eleitorais fixos (D-6), comparados por palavra inteira sobre texto normalizado. */
+/** Termos eleitorais fixos (D-5), comparados por token inteiro sobre texto normalizado. */
 export const ELECTORAL_TERMS: readonly string[] = [
   'vote',
   'vota',
@@ -57,23 +48,29 @@ export const ELECTORAL_TERMS: readonly string[] = [
   '#voto',
 ];
 
-export interface DecisionContext {
-  /** Confiança mínima para aprovar (D-4). */
-  minConfidence: number;
-  /** Nomes de urna dos dois candidatos (D-6); vazio sem snapshot. */
-  ballotNames: string[];
+export interface CandidateIdentityRef {
+  ballotName: string;
+  number: number;
 }
 
-export type DecisionInput =
-  { kind: 'response'; response: ModerationResponse } | { kind: 'refusal' };
+export interface DecisionContext {
+  /** Confiança mínima (0–100) para um rótulo recusar (D-2/D-3). */
+  labelMinConfidence: number;
+  /** `matchConfidence` mínima (0–100) para um rosto reconhecido contar (D-6). */
+  celebrityMinConfidence: number;
+  /** Nome e número de urna dos dois lados (D-5, D-6); vazio sem snapshot. */
+  candidates: CandidateIdentityRef[];
+}
 
 export interface Verdict {
   outcome: 'approved' | 'rejected';
   categories: ModerationCategory[];
-  /** Todas as regras acionadas, na ordem D-1…D-8. */
+  /** Todas as regras acionadas, na ordem D-1…D-7. */
   rules: RuleId[];
-  modelDecision: ModelDecision | null;
+  /** Maior confiança (0–1) entre os sinais que acionaram D-2/D-3/D-6; nulo sem esses sinais. */
   confidence: number | null;
+  /** Uma frase objetiva em pt-BR por regra acionada (R-3). */
+  reasons: string[];
 }
 
 /** Sem acentos, minúsculo, espaços únicos. */
@@ -81,31 +78,42 @@ export function normalizeText(text: string): string {
   return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const EDGE_PUNCTUATION = /^[.,;:!?()"'«»[\]{}]+|[.,;:!?()"'«»[\]{}]+$/g;
 
-/** `term` aparece como palavra(s) inteira(s) em `text` (ambos já normalizados)? */
-export function containsWholeWord(text: string, term: string): boolean {
-  if (term === '') return false;
-  return new RegExp(`(^|[^a-z])${escapeRegExp(term)}([^a-z]|$)`).test(text);
+/**
+ * Tokens de um texto já normalizado: separados por espaço, com pontuação removida só das pontas
+ * (`"13."` → `13`; `"13,90"` e `"13/10"` ficam inteiros) — R-4 D-5.
+ */
+export function tokenize(normalized: string): string[] {
+  return normalized
+    .split(' ')
+    .map((token) => token.replace(EDGE_PUNCTUATION, ''))
+    .filter((token) => token !== '');
 }
 
-function matchesInjection(detectedText: string[]): boolean {
-  return detectedText.some((item) => {
-    const text = normalizeText(item);
-    return INJECTION_PATTERNS.some((pattern) => pattern.test(text));
-  });
+/** `needle` (tokens) aparece como sequência contígua em `haystack` (tokens)? */
+export function containsTokenSequence(
+  haystack: readonly string[],
+  needle: readonly string[],
+): boolean {
+  if (needle.length === 0 || needle.length > haystack.length) return false;
+  outer: for (let i = 0; i + needle.length <= haystack.length; i += 1) {
+    for (let j = 0; j < needle.length; j += 1) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return true;
+  }
+  return false;
 }
 
-function matchesElectoral(detectedText: string[], ballotNames: string[]): boolean {
-  const names = ballotNames.map(normalizeText).filter((name) => name !== '');
-  return detectedText.some((item) => {
-    const text = normalizeText(item);
-    return (
-      ELECTORAL_TERMS.some((term) => containsWholeWord(text, term)) ||
-      names.some((name) => containsWholeWord(text, name))
-    );
-  });
+/** Todos os tokens de `needle` estão em `haystack` (qualquer ordem)? */
+export function containsAllTokens(haystack: readonly string[], needle: readonly string[]): boolean {
+  if (needle.length === 0) return false;
+  const set = new Set(haystack);
+  return needle.every((token) => set.has(token));
 }
+
+const percent = (value: number) => `${value.toFixed(1).replace('.', ',')} %`;
 
 function withCategory(
   categories: ModerationCategory[],
@@ -114,37 +122,148 @@ function withCategory(
   return categories.includes(extra) ? categories : [...categories, extra];
 }
 
-/** Aplica D-1…D-8 (R-4). Falha técnica não passa por aqui (R-5). */
-export function decide(input: DecisionInput, context: DecisionContext): Verdict {
-  if (input.kind === 'refusal') {
-    return {
-      outcome: 'rejected',
-      categories: ['OTHER_POLICY_VIOLATION'],
-      rules: ['D-7'],
-      modelDecision: null,
-      confidence: null,
-    };
-  }
-  const { response } = input;
-  const rules: RuleId[] = [];
-  let categories = [...response.categories];
+interface LabelHit {
+  label: ModerationLabelSignal;
+  category: ModerationCategory;
+  mandatory: boolean;
+}
 
-  if (response.decision === 'REJECT') rules.push('D-1');
-  if (categories.some((category) => MANDATORY_REJECTION_CATEGORIES.includes(category))) {
+/**
+ * Rótulos acima do limiar, um por família: um rótulo pai (ex.: `Violence`) sai quando um filho
+ * seu (ex.: `Weapons`) também passou do limiar — a tabela resolve `Violence` pelo L2. A confiança
+ * do acerto é a maior da cadeia (o L1 costuma vir com confiança maior que o L3).
+ */
+function labelHits(signals: ImageSignals, minConfidence: number): LabelHit[] {
+  const above = signals.labels.filter((label) => label.confidence >= minConfidence);
+  const parents = new Set(above.map((label) => label.parentName).filter((name) => name !== null));
+  const byName = new Map(signals.labels.map((label) => [label.name, label] as const));
+  const hits: LabelHit[] = [];
+  for (const label of above) {
+    if (parents.has(label.name)) continue;
+    const { category, mandatory } = categoryForLabel(label, signals.labels);
+    let confidence = label.confidence;
+    let current: ModerationLabelSignal | undefined = label;
+    for (let depth = 0; current?.parentName && depth < 3; depth += 1) {
+      current = byName.get(current.parentName);
+      if (current) confidence = Math.max(confidence, current.confidence);
+    }
+    hits.push({ label: { ...label, confidence }, category, mandatory });
+  }
+  return hits;
+}
+
+/** Aplica D-1…D-7 (R-4). Falha técnica não passa por aqui (R-5). */
+export function decide(signals: ImageSignals, context: DecisionContext): Verdict {
+  const rules: RuleId[] = [];
+  const reasons: string[] = [];
+  let categories: ModerationCategory[] = [];
+  let maxConfidence: number | null = null;
+  const bump = (value: number) => {
+    maxConfidence = maxConfidence === null ? value : Math.max(maxConfidence, value);
+  };
+
+  // D-1 — texto saturado: há texto que não foi lido; impossível avaliar.
+  if (signals.textSaturated) {
+    rules.push('D-1');
+    reasons.push(
+      `Texto da imagem excede o limite de ${signals.wordCount} palavras lidas; parte não foi avaliada (D-1).`,
+    );
+  }
+
+  // D-2 / D-3 — rótulos do provedor acima do limiar.
+  const hits = labelHits(signals, context.labelMinConfidence);
+  const mandatory = hits.filter((hit) => hit.mandatory);
+  const others = hits.filter((hit) => !hit.mandatory);
+  if (mandatory.length > 0) {
     rules.push('D-2');
+    for (const hit of mandatory) {
+      categories = withCategory(categories, hit.category);
+      bump(hit.label.confidence);
+      reasons.push(
+        `Rótulo "${hit.label.name}" com confiança ${percent(hit.label.confidence)} (D-2).`,
+      );
+    }
   }
-  if (categories.length > 0) rules.push('D-3');
-  if (response.confidence < context.minConfidence) rules.push('D-4');
-  if (matchesInjection(response.detectedText)) {
-    rules.push('D-5');
+  if (others.length > 0) {
+    rules.push('D-3');
+    for (const hit of others) {
+      categories = withCategory(categories, hit.category);
+      bump(hit.label.confidence);
+      reasons.push(
+        `Rótulo "${hit.label.name}" com confiança ${percent(hit.label.confidence)} (D-3).`,
+      );
+    }
+  }
+
+  // D-4 — instrução ao moderador dentro da imagem.
+  const normalizedLines = signals.textLines.map((line) => normalizeText(line.text));
+  const injection = normalizedLines.find((line) =>
+    INJECTION_PATTERNS.some((pattern) => pattern.test(line)),
+  );
+  if (injection !== undefined) {
+    rules.push('D-4');
     categories = withCategory(categories, 'OTHER_POLICY_VIOLATION');
+    reasons.push('Texto da imagem contém instrução dirigida ao moderador (D-4).');
   }
-  if (matchesElectoral(response.detectedText, context.ballotNames)) {
+
+  // D-5 — termos eleitorais, nomes e números de urna.
+  const electoral = findElectoralText(normalizedLines, context.candidates);
+  if (electoral !== null) {
+    rules.push('D-5');
+    categories = withCategory(categories, 'ELECTORAL_PROPAGANDA');
+    reasons.push(`Texto eleitoral: "${electoral}" (D-5).`);
+  }
+
+  // D-6 — rosto reconhecido de um dos dois candidatos.
+  const face = signals.celebrities.find(
+    (person) =>
+      person.matchConfidence >= context.celebrityMinConfidence &&
+      matchesCandidate(person.name, context.candidates),
+  );
+  if (face !== undefined) {
     rules.push('D-6');
     categories = withCategory(categories, 'ELECTORAL_PROPAGANDA');
+    bump(face.matchConfidence);
+    reasons.push(
+      `Pessoa pública reconhecida corresponde a um candidato (confiança ${percent(face.matchConfidence)}) (D-6).`,
+    );
   }
 
-  const base = { modelDecision: response.decision, confidence: response.confidence };
-  if (rules.length > 0) return { outcome: 'rejected', categories, rules, ...base };
-  return { outcome: 'approved', categories: [], rules: ['D-8'], ...base };
+  const confidence = maxConfidence === null ? null : Math.round(maxConfidence * 10) / 1000;
+  if (rules.length > 0) return { outcome: 'rejected', categories, rules, confidence, reasons };
+  return { outcome: 'approved', categories: [], rules: ['D-7'], confidence: null, reasons: [] };
+}
+
+/** Linha (original normalizada) que aciona D-5, ou `null`. */
+function findElectoralText(
+  normalizedLines: readonly string[],
+  candidates: readonly CandidateIdentityRef[],
+): string | null {
+  const names = candidates
+    .map((candidate) => tokenize(normalizeText(candidate.ballotName)))
+    .filter((tokens) => tokens.length > 0);
+  const numbers = candidates.map((candidate) => String(candidate.number));
+  const terms = ELECTORAL_TERMS.map((term) => tokenize(normalizeText(term)));
+  for (const line of normalizedLines) {
+    const tokens = tokenize(line);
+    if (
+      terms.some((term) => containsTokenSequence(tokens, term)) ||
+      names.some((name) => containsTokenSequence(tokens, name)) ||
+      numbers.some((number) => tokens.includes(number))
+    ) {
+      return line;
+    }
+  }
+  return null;
+}
+
+/** Nome reconhecido contém todos os tokens do nome de urna de um dos lados (D-6)? */
+export function matchesCandidate(
+  personName: string,
+  candidates: readonly CandidateIdentityRef[],
+): boolean {
+  const personTokens = tokenize(normalizeText(personName));
+  return candidates.some((candidate) =>
+    containsAllTokens(personTokens, tokenize(normalizeText(candidate.ballotName))),
+  );
 }

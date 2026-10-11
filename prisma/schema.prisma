@@ -285,7 +285,7 @@ model SponsorshipModerationRecord {
   model          String?
   policyVersion  String            @map("policy_version")
   outcome        ModerationOutcome
-  /// Decisão bruta do modelo (`APPROVE`/`REJECT`); nula em recusa do provedor ou falha.
+  /// Decisão bruta do modelo na v1 (Claude); sempre nula na v2 (Rekognition). Mantida pelo histórico.
   modelDecision  String?           @map("model_decision")
   categories     String[]          @default([])
   reasons        String[]          @default([])
@@ -297,8 +297,12 @@ model SponsorshipModerationRecord {
   requestId      String?           @map("request_id")
   imageSha256    String?           @map("image_sha256")
   latencyMs      Int               @map("latency_ms")
+  /// Tokens da v1 (Claude); sempre nulos na v2 (Rekognition). Mantidos pelo histórico.
   inputTokens    Int?              @map("input_tokens")
   outputTokens   Int?              @map("output_tokens")
+  /// Sinais normalizados do provedor (R-3): rótulos, tipos de conteúdo, linhas de texto, contagem
+  /// de palavras, saturação e pessoas reconhecidas. Base da calibração (AC-23).
+  signals        Json?
   createdAt      DateTime          @map("created_at") @db.Timestamptz(3)
 
   @@unique([sponsorshipId, attempt])

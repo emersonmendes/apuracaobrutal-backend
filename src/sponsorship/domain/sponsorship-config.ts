@@ -25,9 +25,7 @@ export interface AsaasConfig {
 export interface ModerationPolicyConfig {
   /** Tentativas por pedido antes de `error` definitivo (1–5). */
   maxAttempts: number;
-  /** Confiança mínima para aprovar (D-4), em `[0.5, 1]`. */
-  minConfidence: number;
-  /** Teto global de chamadas ao provedor por hora. */
+  /** Teto global de tentativas (cada uma = até três chamadas ao provedor) por hora. */
   maxPerHour: number;
 }
 

@@ -1,3 +1,4 @@
+import type { ImageSignals } from '../../../moderation/domain/signals';
 import type { ModerationState, ModerationWrites } from '../moderation-state';
 import type { ReceivedPayment, RefundState } from '../payment';
 import type { SponsorshipSlot } from '../slots';
@@ -31,6 +32,8 @@ export interface ModerationRecordInput {
   latencyMs: number;
   inputTokens: number | null;
   outputTokens: number | null;
+  /** Sinais normalizados do provedor (R-3, R-9); nulos em falha antes da análise. */
+  signals: ImageSignals | null;
   createdAt: Date;
 }
 

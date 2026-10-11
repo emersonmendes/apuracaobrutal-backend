@@ -1,12 +1,12 @@
-import { MODERATION_POLICY_VERSION } from '../../domain/contract';
 import type { AnalyzerResult, ImageAnalyzer } from '../../domain/ports/image-analyzer';
+import { EMPTY_RAW_SIGNALS } from '../../domain/signals';
 
 export const SIMULATED_DELAY_MS = 1_000;
 
 /**
- * Analisador simulado (spec sponsorship-image-moderation FR-01): aprova tudo após 1 s, para
- * desenvolvimento sem chave. Identificado como `simulated` na auditoria; recusado em produção
- * pela config.
+ * Analisador simulado (spec sponsorship-image-moderation FR-01): devolve sinais vazios após 1 s
+ * (a política então aprova), para desenvolvimento sem credenciais. Identificado como `simulated`
+ * na auditoria; recusado em produção pela config.
  */
 export class SimulatedImageAnalyzer implements ImageAnalyzer {
   readonly name = 'simulated' as const;
@@ -26,22 +26,10 @@ export class SimulatedImageAnalyzer implements ImageAnalyzer {
       signal.addEventListener('abort', done);
     });
     return {
-      kind: 'response',
-      raw: {
-        decision: 'APPROVE',
-        categories: [],
-        detected_text: [],
-        reasons: [
-          'Análise simulada (desenvolvimento): aprovação automática sem leitura da imagem.',
-        ],
-        confidence: 1,
-        policy_version: MODERATION_POLICY_VERSION,
-      },
+      raw: EMPTY_RAW_SIGNALS,
       model: 'simulated',
       requestId: null,
       latencyMs: Date.now() - startedAt,
-      inputTokens: null,
-      outputTokens: null,
     };
   }
 }

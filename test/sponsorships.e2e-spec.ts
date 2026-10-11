@@ -385,7 +385,7 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
       const text = JSON.stringify(doc);
       expect(text).toContain('ModerationInfoDto');
       expect(text).toMatch(/moderation_pending.*moderation_rejected.*moderation_error/);
-      expect(text).not.toMatch(/ModerationRecord|ANTHROPIC|detectedText/);
+      expect(text).not.toMatch(/ModerationRecord|ANTHROPIC|AWS_|Rekognition|detectedText|signals/);
     });
   });
 

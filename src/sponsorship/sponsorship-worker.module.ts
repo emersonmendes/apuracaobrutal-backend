@@ -11,7 +11,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ExpirePendingSponsorships } from './application/expire-pending-sponsorships';
 import { ModeratePendingSponsorships } from './application/moderate-pending-sponsorships';
 import { ProcessPaymentRefunds } from './application/process-payment-refunds';
-import { CANDIDATE_NAMES, type CandidateNames } from './domain/ports/candidate-names';
+import { CANDIDATE_IDENTITY, type CandidateIdentity } from './domain/ports/candidate-identity';
 import { PAYMENT_GATEWAY, type PaymentGateway } from './domain/ports/payment-gateway';
 import { SPONSORSHIP_CLOCK, type Clock } from './domain/ports/clock';
 import {
@@ -23,7 +23,7 @@ import {
   type SponsorshipRepository,
 } from './domain/ports/sponsorship-repository';
 import type { SponsorshipConfig } from './domain/sponsorship-config';
-import { PrismaCandidateNames } from './infra/adapters/prisma-candidate-names';
+import { PrismaCandidateIdentity } from './infra/adapters/prisma-candidate-identity';
 import { SPONSORSHIP_CONFIG } from './infra/config/sponsorship-config.factory';
 import { SPONSORSHIP_CORE_PROVIDERS } from './sponsorship.module';
 
@@ -47,12 +47,12 @@ import { SPONSORSHIP_CORE_PROVIDERS } from './sponsorship.module';
         new ProcessPaymentRefunds(r, g, c, new Logger('PaymentRefunds')),
       inject: [SPONSORSHIP_REPOSITORY, PAYMENT_GATEWAY, SPONSORSHIP_CLOCK],
     },
-    // Nomes de urna dos dois lados para a regra D-6 (sponsorship-image-moderation R-4).
+    // Nome e número de urna dos dois lados para D-5/D-6 (sponsorship-image-moderation R-4).
     {
-      provide: CANDIDATE_NAMES,
-      useFactory: (prisma: PrismaService): CandidateNames => {
+      provide: CANDIDATE_IDENTITY,
+      useFactory: (prisma: PrismaService): CandidateIdentity => {
         const election = parseElectionConfig(process.env);
-        return new PrismaCandidateNames(prisma, election.electionCode, election.sides);
+        return new PrismaCandidateIdentity(prisma, election.electionCode, election.sides);
       },
       inject: [PrismaService],
     },
@@ -62,7 +62,7 @@ import { SPONSORSHIP_CORE_PROVIDERS } from './sponsorship.module';
         r: SponsorshipRepository,
         s: SponsorImageStorage,
         moderate: ModerateImage,
-        names: CandidateNames,
+        identity: CandidateIdentity,
         g: PaymentGateway,
         c: Clock,
         cfg: SponsorshipConfig,
@@ -72,18 +72,22 @@ import { SPONSORSHIP_CORE_PROVIDERS } from './sponsorship.module';
           r,
           s,
           moderate,
-          names,
+          identity,
           g,
           c,
           cfg,
-          moderation.timeoutMs,
+          {
+            timeoutMs: moderation.timeoutMs,
+            labelMinConfidence: moderation.labelMinConfidence,
+            celebrityMinConfidence: moderation.celebrityMinConfidence,
+          },
           new Logger('ImageModeration'),
         ),
       inject: [
         SPONSORSHIP_REPOSITORY,
         SPONSOR_IMAGE_STORAGE,
         ModerateImage,
-        CANDIDATE_NAMES,
+        CANDIDATE_IDENTITY,
         PAYMENT_GATEWAY,
         SPONSORSHIP_CLOCK,
         SPONSORSHIP_CONFIG,

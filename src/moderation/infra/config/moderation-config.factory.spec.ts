@@ -1,63 +1,84 @@
 import { InvalidModerationConfigError, parseModerationConfig } from './moderation-config.factory';
 
-const KEY = 'sk-ant-test-0123456789';
-
 describe('parseModerationConfig — spec sponsorship-image-moderation FR-01 (AC-01)', () => {
-  it('padrões com claude', () => {
-    expect(parseModerationConfig({ ANTHROPIC_API_KEY: KEY })).toEqual({
-      analyzer: 'claude',
-      model: 'claude-opus-5-5',
-      effort: 'medium',
-      timeoutMs: 60_000,
-      apiKey: KEY,
+  it('padrões com rekognition', () => {
+    expect(parseModerationConfig({})).toEqual({
+      analyzer: 'rekognition',
+      region: 'us-east-1',
+      profile: null,
+      timeoutMs: 15_000,
+      labelMinConfidence: 60,
+      celebrityMinConfidence: 90,
     });
   });
 
-  it('lê modelo, effort e timeout', () => {
+  it('lê região, profile, timeout e limiares', () => {
     expect(
       parseModerationConfig({
-        ANTHROPIC_API_KEY: KEY,
-        ANTHROPIC_MODERATION_MODEL: 'claude-sonnet-5-5',
-        ANTHROPIC_MODERATION_EFFORT: 'low',
-        ANTHROPIC_TIMEOUT_MS: '15000',
+        AWS_REGION: 'sa-east-1',
+        AWS_PROFILE: 'puoro',
+        REKOGNITION_TIMEOUT_MS: '2000',
+        SPONSORSHIP_MODERATION_LABEL_MIN_CONFIDENCE: '75',
+        SPONSORSHIP_MODERATION_CELEBRITY_MIN_CONFIDENCE: '50',
       }),
-    ).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'low', timeoutMs: 15_000 });
+    ).toEqual({
+      analyzer: 'rekognition',
+      region: 'sa-east-1',
+      profile: 'puoro',
+      timeoutMs: 2_000,
+      labelMinConfidence: 75,
+      celebrityMinConfidence: 50,
+    });
   });
 
-  it('simulated ignora as ANTHROPIC_* e não guarda chave', () => {
+  it('simulated ignora AWS_*/REKOGNITION_* e nunca lê ANTHROPIC_*', () => {
     expect(
       parseModerationConfig({
         SPONSORSHIP_MODERATION: 'simulated',
-        ANTHROPIC_TIMEOUT_MS: 'abc',
-        ANTHROPIC_MODERATION_EFFORT: 'turbo',
+        AWS_REGION: 'inválida',
+        REKOGNITION_TIMEOUT_MS: 'abc',
+        SPONSORSHIP_MODERATION_LABEL_MIN_CONFIDENCE: '1',
+        ANTHROPIC_API_KEY: 'sk-ant-x',
+        SPONSORSHIP_MODERATION_MIN_CONFIDENCE: '0.1',
       }),
     ).toEqual({
       analyzer: 'simulated',
-      model: 'claude-opus-5-5',
-      effort: 'medium',
-      timeoutMs: 60_000,
-      apiKey: null,
+      region: 'us-east-1',
+      profile: null,
+      timeoutMs: 15_000,
+      labelMinConfidence: 60,
+      celebrityMinConfidence: 90,
     });
   });
 
   it.each([
-    ['sem chave', {}],
-    ['analisador desconhecido', { SPONSORSHIP_MODERATION: 'gpt', ANTHROPIC_API_KEY: KEY }],
-    ['simulated em produção', { SPONSORSHIP_MODERATION: 'simulated', NODE_ENV: 'production' }],
-    ['modelo inválido', { ANTHROPIC_API_KEY: KEY, ANTHROPIC_MODERATION_MODEL: 'Opus 5.5!' }],
-    ['effort desconhecido', { ANTHROPIC_API_KEY: KEY, ANTHROPIC_MODERATION_EFFORT: 'xhigh' }],
-    ['timeout < 5000', { ANTHROPIC_API_KEY: KEY, ANTHROPIC_TIMEOUT_MS: '4999' }],
-    ['timeout não inteiro', { ANTHROPIC_API_KEY: KEY, ANTHROPIC_TIMEOUT_MS: '1e4' }],
-  ])('%s → não sobe', (_, env) => {
-    expect(() => parseModerationConfig(env)).toThrow(InvalidModerationConfigError);
+    ['SPONSORSHIP_MODERATION', 'claude'],
+    ['SPONSORSHIP_MODERATION', 'gpt'],
+    ['AWS_REGION', 'xx'],
+    ['AWS_REGION', 'US-EAST-1'],
+    ['REKOGNITION_TIMEOUT_MS', '1999'],
+    ['REKOGNITION_TIMEOUT_MS', 'dez'],
+    ['SPONSORSHIP_MODERATION_LABEL_MIN_CONFIDENCE', '49'],
+    ['SPONSORSHIP_MODERATION_LABEL_MIN_CONFIDENCE', '101'],
+    ['SPONSORSHIP_MODERATION_LABEL_MIN_CONFIDENCE', '0.8'],
+    ['SPONSORSHIP_MODERATION_CELEBRITY_MIN_CONFIDENCE', '49'],
+    ['SPONSORSHIP_MODERATION_CELEBRITY_MIN_CONFIDENCE', 'alta'],
+  ])('%s=%s impede a inicialização', (name, raw) => {
+    expect(() => parseModerationConfig({ [name]: raw })).toThrow(InvalidModerationConfigError);
   });
 
-  it('a mensagem de erro nunca ecoa a chave', () => {
+  it('simulated em produção não sobe', () => {
+    expect(() =>
+      parseModerationConfig({ SPONSORSHIP_MODERATION: 'simulated', NODE_ENV: 'production' }),
+    ).toThrow(/production/);
+  });
+
+  it('mensagens de erro não ecoam credenciais', () => {
     try {
-      parseModerationConfig({ ANTHROPIC_API_KEY: KEY, ANTHROPIC_TIMEOUT_MS: '1' });
+      parseModerationConfig({ AWS_REGION: 'ruim', AWS_SECRET_ACCESS_KEY: 'SEGREDO123' });
       throw new Error('deveria falhar');
     } catch (error) {
-      expect((error as Error).message).not.toContain(KEY);
+      expect(String(error)).not.toContain('SEGREDO123');
     }
   });
 });

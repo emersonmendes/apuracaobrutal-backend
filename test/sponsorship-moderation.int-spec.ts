@@ -48,22 +48,30 @@ const record = (
   overrides: Partial<ModerationRecordInput> = {},
 ): ModerationRecordInput => ({
   attempt,
-  provider: 'claude',
-  model: 'claude-opus-5-5',
-  policyVersion: '1.0',
+  provider: 'rekognition',
+  model: 'moderation=7.0;text=3.0',
+  policyVersion: '2.0',
   outcome: 'approved',
-  modelDecision: 'APPROVE',
+  modelDecision: null,
   categories: [],
-  reasons: ['ok'],
-  detectedText: [],
+  reasons: [],
+  detectedText: ['Padaria'],
   confidence: 0.95,
-  rejectionRules: ['D-8'],
+  rejectionRules: ['D-7'],
   errorCode: null,
   requestId: 'req_x',
   imageSha256: 'b'.repeat(64),
   latencyMs: 1200,
-  inputTokens: 1500,
-  outputTokens: 100,
+  inputTokens: null,
+  outputTokens: null,
+  signals: {
+    labels: [{ name: 'Alcohol', parentName: null, taxonomyLevel: 1, confidence: 55 }],
+    contentTypes: [],
+    textLines: [{ text: 'Padaria', confidence: 99 }],
+    wordCount: 1,
+    textSaturated: false,
+    celebrities: [],
+  },
   createdAt: T0,
   ...overrides,
 });
@@ -134,11 +142,18 @@ describe('PrismaSponsorshipRepository — moderação (integração)', () => {
       where: { sponsorshipId: o.id },
     });
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ attempt: 1, outcome: 'approved', rejectionRules: ['D-8'] });
+    expect(rows[0]).toMatchObject({
+      attempt: 1,
+      outcome: 'approved',
+      rejectionRules: ['D-7'],
+      modelDecision: null,
+      inputTokens: null,
+      signals: record(1).signals,
+    });
     expect(Number(rows[0].confidence)).toBe(0.95);
     await expect(repository.recordModeration(o.id, record(1), writes)).rejects.toThrow();
     expect(
-      await repository.moderationCallsSince('claude', new Date(T0.getTime() - 60_000)),
+      await repository.moderationCallsSince('rekognition', new Date(T0.getTime() - 60_000)),
     ).toBeGreaterThanOrEqual(1);
   });
 

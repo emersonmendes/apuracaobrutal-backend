@@ -1,16 +1,17 @@
-import {
-  MODERATION_POLICY_VERSION,
-  parseModerationResponse,
-  type ModerationResponse,
-} from '../domain/contract';
 import { AnalyzerError, type AnalyzerErrorCode } from '../domain/errors';
-import { decide, type DecisionContext, type Verdict } from '../domain/policy';
+import {
+  decide,
+  MODERATION_POLICY_VERSION,
+  type DecisionContext,
+  type Verdict,
+} from '../domain/policy';
 import type {
   AnalyzeImageInput,
   AnalyzerName,
   AnalyzerResult,
   ImageAnalyzer,
 } from '../domain/ports/image-analyzer';
+import { normalizeSignals, type ImageSignals } from '../domain/signals';
 
 export type ModerateImageErrorCode = AnalyzerErrorCode | 'invalid_response';
 
@@ -19,8 +20,6 @@ interface AttemptMeta {
   model: string | null;
   requestId: string | null;
   latencyMs: number;
-  inputTokens: number | null;
-  outputTokens: number | null;
 }
 
 /** Resultado de **uma** tentativa (spec sponsorship-image-moderation FR-04, R-5). */
@@ -28,15 +27,15 @@ export type ModerationAttemptResult =
   | ({
       outcome: 'approved' | 'rejected';
       verdict: Verdict;
-      response: ModerationResponse | null;
+      signals: ImageSignals;
       policyVersion: string;
     } & AttemptMeta)
   | ({ outcome: 'error'; errorCode: ModerateImageErrorCode; policyVersion: string } & AttemptMeta);
 
 /**
- * Uma tentativa de moderação: chama o analisador com timeout, valida o contrato (R-3) e aplica a
- * política determinística (R-4). Nunca lança por falha do provedor: devolve `error` com o código
- * (R-5). Não conhece pedidos nem banco.
+ * Uma tentativa de moderação: chama o analisador com timeout, normaliza os sinais (R-3) e aplica
+ * a política determinística (R-4). Nunca lança por falha do provedor: devolve `error` com o
+ * código (R-5). Não conhece pedidos nem banco.
  */
 export class ModerateImage {
   constructor(
@@ -68,8 +67,6 @@ export class ModerateImage {
         model: null,
         requestId: null,
         latencyMs: Date.now() - startedAt,
-        inputTokens: null,
-        outputTokens: null,
       };
     }
 
@@ -78,21 +75,9 @@ export class ModerateImage {
       model: result.model,
       requestId: result.requestId,
       latencyMs: result.latencyMs,
-      inputTokens: result.kind === 'response' ? result.inputTokens : null,
-      outputTokens: result.kind === 'response' ? result.outputTokens : null,
     };
-    if (result.kind === 'refusal') {
-      const verdict = decide({ kind: 'refusal' }, context);
-      return {
-        outcome: verdict.outcome,
-        verdict,
-        response: null,
-        policyVersion: MODERATION_POLICY_VERSION,
-        ...meta,
-      };
-    }
-    const parsed = parseModerationResponse(result.raw);
-    if (!parsed.ok) {
+    const normalized = normalizeSignals(result.raw);
+    if (!normalized.ok) {
       return {
         outcome: 'error',
         errorCode: 'invalid_response',
@@ -100,11 +85,16 @@ export class ModerateImage {
         ...meta,
       };
     }
-    const verdict = decide({ kind: 'response', response: parsed.value }, context);
+    const verdict = decide(normalized.value, context);
+    if (normalized.truncated.length > 0) {
+      verdict.reasons.push(
+        `Sinais truncados para a auditoria: ${normalized.truncated.join(', ')}.`,
+      );
+    }
     return {
       outcome: verdict.outcome,
       verdict,
-      response: parsed.value,
+      signals: normalized.value,
       policyVersion: MODERATION_POLICY_VERSION,
       ...meta,
     };
