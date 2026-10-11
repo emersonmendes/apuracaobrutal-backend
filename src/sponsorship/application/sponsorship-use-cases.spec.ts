@@ -69,6 +69,7 @@ describe('CreateSponsorship — spec sponsorships FR-04, Fluxo 2', () => {
     expect(created).toMatchObject({
       slot: 'center',
       minutes: 2,
+      priceTier: 'election_day',
       unitPriceCents: 300_000,
       amountCents: 600_000,
       status: 'pending_payment',
@@ -129,7 +130,7 @@ describe('CreateSponsorship — spec sponsorships FR-04, Fluxo 2', () => {
 });
 
 describe('ConfirmPayment — spec sponsorships R-5, R-6, R-9 (AC-06, AC-08)', () => {
-  it('local livre: entra em 1 minuto e dura N minutos', async () => {
+  it('local livre: entra no ar no instante do pagamento e dura N minutos', async () => {
     const s = setup();
     const { id } = await s.create.execute(input(), PNG_HEADER);
     s.clock.advance(5 * MIN);
@@ -137,9 +138,9 @@ describe('ConfirmPayment — spec sponsorships R-5, R-6, R-9 (AC-06, AC-08)', ()
     expect(confirmed).toMatchObject({
       status: 'scheduled',
       confirmedAt: new Date('2026-10-25T23:05:00.000Z'),
-      startsAt: new Date('2026-10-25T23:06:00.000Z'),
-      endsAt: new Date('2026-10-25T23:08:00.000Z'),
-      startsInMinutes: 1,
+      startsAt: new Date('2026-10-25T23:05:00.000Z'),
+      endsAt: new Date('2026-10-25T23:07:00.000Z'),
+      startsInMinutes: 0,
     });
   });
 
@@ -150,7 +151,7 @@ describe('ConfirmPayment — spec sponsorships R-5, R-6, R-9 (AC-06, AC-08)', ()
     const a = await s.confirm.execute(second.id);
     const b = await s.confirm.execute(first.id);
     expect(b.startsAt).toEqual(a.endsAt);
-    expect(b.startsInMinutes).toBe(3);
+    expect(b.startsInMinutes).toBe(2);
   });
 
   it('locais diferentes não interferem', async () => {
@@ -158,7 +159,7 @@ describe('ConfirmPayment — spec sponsorships R-5, R-6, R-9 (AC-06, AC-08)', ()
     const center = await s.create.execute(input(), PNG_HEADER);
     const floor = await s.create.execute(input({ slot: 'floor' }), PNG_HEADER);
     await s.confirm.execute(center.id);
-    expect((await s.confirm.execute(floor.id)).startsInMinutes).toBe(1);
+    expect((await s.confirm.execute(floor.id)).startsInMinutes).toBe(0);
   });
 
   it('é idempotente', async () => {
@@ -209,7 +210,9 @@ describe('GetSponsorship / GetOffer / GetSchedule / ReadSponsorImage', () => {
     expect(offer.slots.find((x) => x.slot === 'center')).toEqual({
       slot: 'center',
       unitPriceCents: 300_000,
-      queueEndsAt: new Date('2026-10-25T23:05:00.000Z'),
+      electionDayUnitPriceCents: 300_000,
+      priceTier: 'election_day',
+      queueEndsAt: new Date('2026-10-25T23:04:00.000Z'),
     });
     expect(offer.slots.find((x) => x.slot === 'glove_red')?.unitPriceCents).toBe(
       offer.slots.find((x) => x.slot === 'glove_blue')?.unitPriceCents,
@@ -232,7 +235,7 @@ describe('GetSponsorship / GetOffer / GetSchedule / ReadSponsorImage', () => {
     await s.create.execute(input(), PNG_HEADER); // pendente: nunca aparece
     const { serverTime, items } = await s.schedule.execute();
     expect(serverTime).toEqual(s.clock.now());
-    // janelas 23:01–23:06, 23:06–23:11, 23:11–23:16 → a terceira começa depois de 23:10
+    // janelas 23:00–23:05, 23:05–23:10, 23:10–23:15 → a terceira começa no fim da janela (23:10)
     expect(items.map((item) => item.id)).toEqual(ids.slice(0, 2));
     s.clock.advance(7 * MIN);
     expect((await s.schedule.execute()).items.map((item) => item.id)).toEqual(ids.slice(1));
@@ -278,5 +281,114 @@ describe('ExpirePendingSponsorships — spec sponsorships FR-05 (AC-11)', () => 
     expect(await s.cleanup.execute()).toEqual({ expired: 2, imagesRemoved: 1 });
     expect(s.storage.files.has(`${b.id}.webp`)).toBe(false);
     expect(s.warnings).toHaveLength(1);
+  });
+});
+
+describe('preço por período — spec sponsorship-election-pricing R-3–R-5', () => {
+  // Fixtures: dia da eleição = [2026-10-25T03:00Z, 2026-10-26T03:00Z).
+  const BEFORE = new Date('2026-10-24T15:00:00.000Z');
+  const EVE = new Date('2026-10-25T02:50:00.000Z'); // 23:50 da véspera em São Paulo
+  const AFTER = new Date('2026-10-27T15:00:00.000Z');
+
+  it('oferta antes do dia: tabela reduzida, com o preço do dia da eleição ao lado (AC-07)', async () => {
+    const s = setup();
+    s.clock.current = BEFORE;
+    const offer = await s.offer.execute();
+    expect(offer.electionDay).toEqual(s.config.electionDay);
+    expect(
+      offer.slots.map(({ slot, unitPriceCents, electionDayUnitPriceCents, priceTier }) => [
+        slot,
+        unitPriceCents,
+        electionDayUnitPriceCents,
+        priceTier,
+      ]),
+    ).toEqual([
+      ['side_left', 500, 100_000, 'standard'],
+      ['side_right', 500, 100_000, 'standard'],
+      ['center', 1_500, 300_000, 'standard'],
+      ['floor', 2_500, 500_000, 'standard'],
+      ['glove_red', 1_000, 200_000, 'standard'],
+      ['glove_blue', 1_000, 200_000, 'standard'],
+    ]);
+  });
+
+  it('oferta: fila que alcança o dia mostra o preço cheio daquele local', async () => {
+    const s = setup();
+    s.clock.current = EVE;
+    const { id } = await s.create.execute(input({ minutes: '15' }), PNG_HEADER);
+    await s.confirm.execute(id);
+    const offer = await s.offer.execute();
+    expect(offer.slots.find((x) => x.slot === 'center')).toMatchObject({
+      priceTier: 'election_day',
+      unitPriceCents: 300_000,
+    });
+    expect(offer.slots.find((x) => x.slot === 'floor')?.priceTier).toBe('standard');
+  });
+
+  it('criação com local livre antes do dia → standard (AC-04)', async () => {
+    const s = setup();
+    s.clock.current = BEFORE;
+    const created = await s.create.execute(input({ slot: 'side_left', minutes: '2' }), PNG_HEADER);
+    expect(created).toMatchObject({
+      priceTier: 'standard',
+      unitPriceCents: 500,
+      amountCents: 1_000,
+    });
+    expect(s.gateway.charges).toEqual([{ sponsorshipId: created.id, amountCents: 1_000 }]);
+  });
+
+  it('criação depois do dia volta à tabela reduzida', async () => {
+    const s = setup();
+    s.clock.current = AFTER;
+    expect((await s.create.execute(input(), PNG_HEADER)).priceTier).toBe('standard');
+  });
+
+  it('janela prevista que cruza a 00:00 → pedido inteiro no preço cheio (AC-04)', async () => {
+    const s = setup();
+    s.clock.current = EVE;
+    const created = await s.create.execute(input({ minutes: '15' }), PNG_HEADER);
+    expect(created).toMatchObject({
+      priceTier: 'election_day',
+      unitPriceCents: 300_000,
+      amountCents: 15 * 300_000,
+    });
+  });
+
+  it('fila empurra a janela prevista para dentro do dia → election_day (AC-04)', async () => {
+    const s = setup();
+    s.clock.current = EVE;
+    const first = await s.create.execute(input({ minutes: '9' }), PNG_HEADER);
+    expect(first.priceTier).toBe('standard'); // 23:50–23:59
+    await s.confirm.execute(first.id);
+    const second = await s.create.execute(input({ minutes: '2' }), PNG_HEADER);
+    expect(second).toMatchObject({ priceTier: 'election_day', amountCents: 600_000 }); // 23:59–00:01
+  });
+
+  it('confirmação: standard cuja janela real passa a cruzar → price_changed, expira; reconfirmar → expired (AC-06)', async () => {
+    const s = setup();
+    s.clock.current = EVE;
+    const cheap = await s.create.execute(input({ minutes: '5' }), PNG_HEADER);
+    expect(cheap.priceTier).toBe('standard'); // 23:50–23:55
+    s.clock.advance(8 * MIN); // paga 23:58 → 23:58–00:03
+    expect(await codeOf(s.confirm.execute(cheap.id))).toBe('price_changed');
+    expect(s.repository.rows.get(cheap.id)).toMatchObject({ status: 'expired', startsAt: null });
+    expect(await codeOf(s.confirm.execute(cheap.id))).toBe('expired');
+  });
+
+  it('confirmação: election_day cuja janela real sai do dia → price_changed (AC-06)', async () => {
+    const s = setup();
+    s.clock.current = new Date('2026-10-26T02:50:00.000Z'); // 23:50 do dia da eleição
+    const full = await s.create.execute(input({ minutes: '5' }), PNG_HEADER);
+    expect(full.priceTier).toBe('election_day');
+    s.clock.advance(11 * MIN); // paga 00:01 do dia seguinte
+    expect(await codeOf(s.confirm.execute(full.id))).toBe('price_changed');
+  });
+
+  it('confirmação com a mesma faixa agenda normalmente', async () => {
+    const s = setup();
+    s.clock.current = BEFORE;
+    const order = await s.create.execute(input(), PNG_HEADER);
+    s.clock.advance(5 * MIN);
+    expect((await s.confirm.execute(order.id)).status).toBe('scheduled');
   });
 });

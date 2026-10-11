@@ -1,4 +1,10 @@
-import { paymentExpired, schedule, type Sponsorship } from '../../domain/scheduling';
+import {
+  confirmationTierMatches,
+  paymentExpired,
+  schedule,
+  type Sponsorship,
+} from '../../domain/scheduling';
+import type { ElectionDay } from '../../domain/sponsorship-config';
 import type { SponsorshipSlot } from '../../domain/slots';
 import type {
   ConfirmOutcome,
@@ -30,7 +36,7 @@ export class InMemorySponsorshipRepository implements SponsorshipRepository {
     return ends;
   }
 
-  async confirm(id: string, now: Date, leadSeconds: number): Promise<ConfirmOutcome> {
+  async confirm(id: string, now: Date, electionDay: ElectionDay): Promise<ConfirmOutcome> {
     const row = this.rows.get(id);
     if (!row) return { kind: 'not_found' };
     if (row.status === 'scheduled') return { kind: 'scheduled', sponsorship: { ...row } };
@@ -39,7 +45,11 @@ export class InMemorySponsorshipRepository implements SponsorshipRepository {
       return { kind: 'expired' };
     }
     const queueEnd = (await this.queueEnds())[row.slot] ?? null;
-    const window = schedule(now, row.minutes, queueEnd, leadSeconds);
+    const window = schedule(now, row.minutes, queueEnd);
+    if (!confirmationTierMatches(row, window, electionDay)) {
+      row.status = 'expired';
+      return { kind: 'price_changed' };
+    }
     Object.assign(row, { status: 'scheduled', confirmedAt: now, ...window });
     return { kind: 'scheduled', sponsorship: { ...row } };
   }

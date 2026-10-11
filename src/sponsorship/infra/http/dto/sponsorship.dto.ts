@@ -1,15 +1,26 @@
-// DTOs de documentação dos contratos de patrocínio (spec sponsorships FR-03). Só anotações de
+// DTOs de documentação dos contratos de patrocínio (spec sponsorships FR-03;
+// sponsorship-election-pricing FR-03). Só anotações de
 // Swagger; nenhuma resposta traz nome ou e-mail do anunciante (R-8).
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { SPONSORSHIP_SLOTS, type SponsorshipSlot } from '../../../domain/slots';
+import type { PriceTier } from '../../../domain/pricing';
 import type { SponsorshipStatus } from '../../../domain/scheduling';
 
 const STATUSES: SponsorshipStatus[] = ['pending_payment', 'scheduled', 'expired'];
+const PRICE_TIERS: PriceTier[] = ['standard', 'election_day'];
 
 export class OfferSlotDto {
   @ApiProperty({ enum: SPONSORSHIP_SLOTS }) slot!: SponsorshipSlot;
-  @ApiProperty({ description: 'Preço por minuto, em centavos', example: 300000 })
+  @ApiProperty({
+    description:
+      'Preço por minuto, em centavos, na faixa de um pedido de 1 minuto começando agora ou no fim da fila',
+    example: 1500,
+  })
   unitPriceCents!: number;
+  @ApiProperty({ description: 'Preço por minuto no dia da eleição, em centavos', example: 300000 })
+  electionDayUnitPriceCents!: number;
+  @ApiProperty({ enum: PRICE_TIERS, description: 'Faixa de `unitPriceCents`' })
+  priceTier!: PriceTier;
   @ApiProperty({
     type: String,
     format: 'date-time',
@@ -19,10 +30,18 @@ export class OfferSlotDto {
   queueEndsAt!: string | null;
 }
 
+export class ElectionDayDto {
+  @ApiProperty({ example: '2026-10-25', description: 'Dia da eleição (America/Sao_Paulo)' })
+  date!: string;
+  @ApiProperty({ format: 'date-time', description: '00:00 do dia em São Paulo' }) startsAt!: string;
+  @ApiProperty({ format: 'date-time', description: '00:00 do dia seguinte' }) endsAt!: string;
+}
+
 export class SponsorOfferDto {
   @ApiProperty({ description: 'false com gateway simulado em produção' }) available!: boolean;
   @ApiProperty({ example: 60 }) maxMinutes!: number;
   @ApiProperty({ format: 'date-time' }) serverTime!: string;
+  @ApiProperty({ type: ElectionDayDto }) electionDay!: ElectionDayDto;
   @ApiProperty({ type: [OfferSlotDto] }) slots!: OfferSlotDto[];
 }
 
@@ -34,6 +53,11 @@ export class PublicSponsorshipDto {
   @ApiProperty({ format: 'uuid' }) id!: string;
   @ApiProperty({ enum: SPONSORSHIP_SLOTS }) slot!: SponsorshipSlot;
   @ApiProperty({ example: 2 }) minutes!: number;
+  @ApiProperty({
+    enum: PRICE_TIERS,
+    description: 'Faixa de preço congelada no pedido (election_day = preço cheio)',
+  })
+  priceTier!: PriceTier;
   @ApiProperty({ example: 300000 }) unitPriceCents!: number;
   @ApiProperty({ example: 600000 }) amountCents!: number;
   @ApiProperty({ enum: STATUSES }) status!: SponsorshipStatus;
@@ -80,6 +104,7 @@ export class SponsorshipErrorDto {
       'invalid_email',
       'terms_not_accepted',
       'expired',
+      'price_changed',
     ],
   })
   code!: string;

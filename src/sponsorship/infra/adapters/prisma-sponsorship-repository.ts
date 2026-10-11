@@ -1,6 +1,12 @@
 import type { Prisma, Sponsorship as SponsorshipRow } from '@prisma/client';
 import type { PrismaService } from '../../../prisma/prisma.service';
-import { paymentExpired, schedule, type Sponsorship } from '../../domain/scheduling';
+import {
+  confirmationTierMatches,
+  paymentExpired,
+  schedule,
+  type Sponsorship,
+} from '../../domain/scheduling';
+import type { ElectionDay } from '../../domain/sponsorship-config';
 import type { SponsorshipSlot } from '../../domain/slots';
 import type {
   ConfirmOutcome,
@@ -36,9 +42,10 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
 
   /**
    * Uma transação (R-9): trava o pedido; idempotente se já `scheduled`; vencido vira `expired`;
-   * senão serializa o local com um advisory lock de transação, lê o fim da fila e agenda (R-5).
+   * senão serializa o local com um advisory lock de transação, lê o fim da fila e agenda (R-5) —
+   * ou, se a faixa de preço mudou, expira sem agendar (sponsorship-election-pricing R-5).
    */
-  async confirm(id: string, now: Date, leadSeconds: number): Promise<ConfirmOutcome> {
+  async confirm(id: string, now: Date, electionDay: ElectionDay): Promise<ConfirmOutcome> {
     return this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<{ id: string }[]>`
         SELECT id FROM sponsorship WHERE id = ${id}::uuid FOR UPDATE`;
@@ -58,7 +65,11 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
         where: { slot: row.slot, status: 'scheduled' },
         _max: { endsAt: true },
       });
-      const window = schedule(now, row.minutes, queue._max.endsAt, leadSeconds);
+      const window = schedule(now, row.minutes, queue._max.endsAt);
+      if (!confirmationTierMatches(row, window, electionDay)) {
+        await tx.sponsorship.update({ where: { id }, data: { status: 'expired' } });
+        return { kind: 'price_changed' } as const;
+      }
       const updated = await tx.sponsorship.update({
         where: { id },
         data: { status: 'scheduled', confirmedAt: now, ...window },

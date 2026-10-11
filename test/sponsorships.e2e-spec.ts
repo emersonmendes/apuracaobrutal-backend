@@ -97,6 +97,7 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
         id: expect.stringMatching(/^[0-9a-f-]{36}$/),
         slot: 'center',
         minutes: 2,
+        priceTier: 'election_day',
         unitPriceCents: 300_000,
         amountCents: 600_000,
         status: 'pending_payment',
@@ -179,9 +180,9 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
       expect(first.body).toMatchObject({
         id,
         status: 'scheduled',
-        startsInMinutes: 1,
-        startsAt: '2026-10-25T23:01:00.000Z',
-        endsAt: '2026-10-25T23:04:00.000Z',
+        startsInMinutes: 0,
+        startsAt: '2026-10-25T23:00:00.000Z',
+        endsAt: '2026-10-25T23:03:00.000Z',
       });
       const second = await pay(id).expect(200);
       expect(second.body).toEqual(first.body);
@@ -230,8 +231,8 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
         imageUrl: expect.stringMatching(
           new RegExp(`^http://127\\.0\\.0\\.1:\\d+/sponsorships/${a.id}/image$`),
         ),
-        startsAt: '2026-10-25T23:01:00.000Z',
-        endsAt: '2026-10-25T23:06:00.000Z',
+        startsAt: '2026-10-25T23:00:00.000Z',
+        endsAt: '2026-10-25T23:05:00.000Z',
       });
 
       const image = await request(f.app.getHttpServer())
@@ -254,7 +255,14 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
       expect(res.body.slots[0]).toEqual({
         slot: 'side_left',
         unitPriceCents: 100_000,
+        electionDayUnitPriceCents: 100_000,
+        priceTier: 'election_day',
         queueEndsAt: null,
+      });
+      expect(res.body.electionDay).toEqual({
+        date: '2026-10-25',
+        startsAt: '2026-10-25T03:00:00.000Z',
+        endsAt: '2026-10-26T03:00:00.000Z',
       });
     });
   });
@@ -278,6 +286,107 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
         'GET /sponsorships/{id}/image',
       ].sort(),
     );
+  });
+});
+
+describe('Sponsorships — preço por período (e2e) — specs/sponsorship-election-pricing', () => {
+  let f: Fixture;
+  let png: Buffer;
+  const EVE = new Date('2026-10-25T02:50:00.000Z'); // 23:50 da véspera em São Paulo
+
+  const post = (fields: Record<string, string>) =>
+    request(f.app.getHttpServer())
+      .post('/sponsorships')
+      .field({
+        slot: 'side_left',
+        minutes: '2',
+        advertiserName: NAME,
+        email: EMAIL,
+        acceptTerms: 'true',
+        ...fields,
+      })
+      .attach('image', png, 'logo.png');
+  const pay = (id: string) =>
+    request(f.app.getHttpServer()).post(`/sponsorships/${id}/simulated-payment`);
+
+  beforeAll(async () => {
+    Logger.overrideLogger(false);
+    png = await solid(200, 200).png().toBuffer();
+    f = await createApp(testConfig({ createLimitPerHour: 1000 }));
+  });
+
+  afterAll(async () => {
+    await f.app.close();
+  });
+
+  it('antes do dia: oferta e pedido na tabela reduzida (AC-04, AC-07)', async () => {
+    f.clock.current = new Date('2026-10-20T15:00:00.000Z');
+    const offer = await request(f.app.getHttpServer()).get('/sponsorships/offer').expect(200);
+    expect(offer.body.slots[0]).toMatchObject({
+      slot: 'side_left',
+      unitPriceCents: 500,
+      electionDayUnitPriceCents: 100_000,
+      priceTier: 'standard',
+    });
+    const res = await post({}).expect(201);
+    expect(res.body).toMatchObject({
+      priceTier: 'standard',
+      unitPriceCents: 500,
+      amountCents: 1_000,
+    });
+    const got = await request(f.app.getHttpServer())
+      .get(`/sponsorships/${res.body.id}`)
+      .expect(200);
+    expect(got.body.priceTier).toBe('standard');
+  });
+
+  it('campos de preço adulterados no multipart são ignorados (AC-05)', async () => {
+    f.clock.current = EVE;
+    const res = await post({
+      slot: 'floor',
+      minutes: '20',
+      unitPriceCents: '1',
+      amountCents: '1',
+      priceTier: 'standard',
+    }).expect(201);
+    // 23:50 + 20 min cruza a 00:00 → pedido inteiro no preço cheio.
+    expect(res.body).toMatchObject({
+      priceTier: 'election_day',
+      unitPriceCents: 500_000,
+      amountCents: 20 * 500_000,
+    });
+    expect(f.repository.rows.get(res.body.id)).toMatchObject({
+      priceTier: 'election_day',
+      amountCents: 20 * 500_000,
+    });
+  });
+
+  it('faixa mudou entre criação e pagamento → 409 price_changed; reconfirmar → 409 expired (AC-06)', async () => {
+    f.clock.current = EVE;
+    const res = await post({ slot: 'center', minutes: '5' }).expect(201);
+    expect(res.body.priceTier).toBe('standard');
+    f.clock.advance(8 * MIN); // paga 23:58 → janela 23:58–00:03
+    expect((await pay(res.body.id).expect(409)).body).toEqual({ code: 'price_changed' });
+    expect((await pay(res.body.id).expect(409)).body).toEqual({ code: 'expired' });
+    const got = await request(f.app.getHttpServer())
+      .get(`/sponsorships/${res.body.id}`)
+      .expect(200);
+    expect(got.body.status).toBe('expired');
+  });
+
+  it('documento OpenAPI traz priceTier, electionDay e o código price_changed (AC-07)', () => {
+    const doc = createSwaggerDocument(f.app) as unknown as {
+      components: { schemas: Record<string, { properties: Record<string, { enum?: string[] }> }> };
+    };
+    const schemas = doc.components.schemas;
+    expect(schemas.SponsorOfferDto.properties).toHaveProperty('electionDay');
+    expect(schemas.OfferSlotDto.properties).toHaveProperty('electionDayUnitPriceCents');
+    expect(schemas.OfferSlotDto.properties.priceTier.enum).toEqual(['standard', 'election_day']);
+    expect(schemas.PublicSponsorshipDto.properties.priceTier.enum).toEqual([
+      'standard',
+      'election_day',
+    ]);
+    expect(schemas.SponsorshipErrorDto.properties.code.enum).toContain('price_changed');
   });
 });
 

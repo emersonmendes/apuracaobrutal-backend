@@ -4,6 +4,7 @@ import {
   type Sponsorship,
   type SponsorshipStatus,
 } from '../domain/scheduling';
+import type { PriceTier } from '../domain/pricing';
 import type { SponsorshipSlot } from '../domain/slots';
 
 /** Visão pública de um pedido (FR-03): nunca inclui nome nem e-mail do anunciante (R-8). */
@@ -11,6 +12,7 @@ export interface PublicSponsorship {
   id: string;
   slot: SponsorshipSlot;
   minutes: number;
+  priceTier: PriceTier;
   unitPriceCents: number;
   amountCents: number;
   status: SponsorshipStatus;
@@ -28,6 +30,7 @@ export function toPublic(order: Sponsorship, now: Date): PublicSponsorship {
     id: order.id,
     slot: order.slot,
     minutes: order.minutes,
+    priceTier: order.priceTier,
     unitPriceCents: order.unitPriceCents,
     amountCents: order.amountCents,
     status,

@@ -18,9 +18,10 @@ export class ConfirmPayment {
   async execute(id: string): Promise<PublicSponsorship> {
     if (!purchaseAvailable(this.config)) throw new SponsorshipError('unavailable');
     const now = this.clock.now();
-    const outcome = await this.repository.confirm(id, now, this.config.leadSeconds);
+    const outcome = await this.repository.confirm(id, now, this.config.electionDay);
     if (outcome.kind === 'not_found') throw new SponsorshipError('not_found');
     if (outcome.kind === 'expired') throw new SponsorshipError('expired');
+    if (outcome.kind === 'price_changed') throw new SponsorshipError('price_changed');
     return toPublic(outcome.sponsorship, now);
   }
 }

@@ -1,4 +1,5 @@
-import type { SponsorshipConfig } from '../../domain/sponsorship-config';
+import { standardTable } from '../../domain/pricing';
+import type { ElectionDay, SponsorshipConfig } from '../../domain/sponsorship-config';
 
 export const SPONSORSHIP_CONFIG = Symbol('SPONSORSHIP_CONFIG');
 
@@ -26,8 +27,81 @@ function integer(env: Env, name: string, fallback: number, min: number, problems
   return Number(raw);
 }
 
+const ELECTION_TIME_ZONE = 'America/Sao_Paulo';
+const DAY_MS = 86_400_000;
+
+/** Offset (ms) do fuso no instante dado: hora local − UTC, pelo banco de fusos do ICU. */
+function zoneOffsetMs(instant: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(new Date(instant));
+  const get = (type: string) => Number(parts.find((part) => part.type === type)!.value);
+  const local = Date.UTC(
+    get('year'),
+    get('month') - 1,
+    get('day'),
+    get('hour'),
+    get('minute'),
+    get('second'),
+  );
+  return local - instant;
+}
+
 /**
- * Lê e valida a configuração de patrocínios (spec sponsorships FR-01, R-3, R-9). Qualquer valor
+ * Primeiro instante do dia local `y-m-d` no fuso, como instante UTC (offset real da data, sem
+ * offset fixo). Se a 00:00 cair num salto de horário de verão, é o primeiro instante que existe.
+ */
+function startOfLocalDay(y: number, m: number, d: number, timeZone: string): Date {
+  const naive = Date.UTC(y, m - 1, d);
+  const beforeShift = naive - zoneOffsetMs(naive, timeZone);
+  const afterShift = naive - zoneOffsetMs(beforeShift, timeZone);
+  const isTargetDay = (instant: number) => {
+    const local = new Date(instant + zoneOffsetMs(instant, timeZone));
+    return local.getUTCDate() === d && local.getUTCMonth() === m - 1;
+  };
+  const candidates = [Math.min(beforeShift, afterShift), Math.max(beforeShift, afterShift)];
+  return new Date(candidates.find(isTargetDay) ?? afterShift);
+}
+
+/**
+ * Dia da eleição `AAAA-MM-DD` → janela `[00:00, 00:00 do dia seguinte)` em `America/Sao_Paulo`
+ * (spec sponsorship-election-pricing R-1). Data malformada ou inexistente → `null`.
+ */
+export function electionDayOf(date: string): ElectionDay | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return null;
+  const [y, m, d] = match.slice(1).map(Number);
+  const calendar = new Date(Date.UTC(y, m - 1, d));
+  if (
+    calendar.getUTCFullYear() !== y ||
+    calendar.getUTCMonth() !== m - 1 ||
+    calendar.getUTCDate() !== d
+  ) {
+    return null;
+  }
+  const next = new Date(Date.UTC(y, m - 1, d) + DAY_MS);
+  return {
+    date,
+    startsAt: startOfLocalDay(y, m, d, ELECTION_TIME_ZONE),
+    endsAt: startOfLocalDay(
+      next.getUTCFullYear(),
+      next.getUTCMonth() + 1,
+      next.getUTCDate(),
+      ELECTION_TIME_ZONE,
+    ),
+  };
+}
+
+/**
+ * Lê e valida a configuração de patrocínios (spec sponsorships FR-01, R-3, R-9;
+ * sponsorship-election-pricing FR-01). Qualquer valor
  * inválido impede a subida do processo.
  */
 export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
@@ -42,8 +116,19 @@ export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
     glove: integer(env, 'SPONSORSHIP_PRICE_GLOVE_CENTS', 200_000, 1, problems),
     side: integer(env, 'SPONSORSHIP_PRICE_SIDE_CENTS', 100_000, 1, problems),
   };
+  const standardSideCents = integer(env, 'SPONSORSHIP_STANDARD_PRICE_SIDE_CENTS', 500, 1, problems);
+  const standardPricesCents = standardTable(pricesCents, standardSideCents);
+  for (const [key, cents] of Object.entries(standardPricesCents)) {
+    if (cents < 1) problems.push(`preço reduzido de "${key}" ficaria < 1 centavo`);
+  }
+  const electionDate = value(env, 'SPONSORSHIP_ELECTION_DATE', '2026-10-25');
+  const electionDay = electionDayOf(electionDate);
+  if (!electionDay) {
+    problems.push(
+      `SPONSORSHIP_ELECTION_DATE deve ser uma data AAAA-MM-DD (recebido: "${electionDate}")`,
+    );
+  }
   const maxMinutes = integer(env, 'SPONSORSHIP_MAX_MINUTES', 60, 1, problems);
-  const leadSeconds = integer(env, 'SPONSORSHIP_LEAD_SECONDS', 60, 30, problems);
   const paymentTtlMinutes = integer(env, 'SPONSORSHIP_PAYMENT_TTL_MINUTES', 30, 5, problems);
   const imageMaxBytes = integer(env, 'SPONSORSHIP_IMAGE_MAX_BYTES', 2_097_152, 1, problems);
   const createLimitPerHour = integer(env, 'SPONSORSHIP_CREATE_LIMIT_PER_HOUR', 10, 1, problems);
@@ -55,8 +140,9 @@ export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
     gateway: 'simulated',
     production: env.NODE_ENV === 'production',
     pricesCents,
+    standardPricesCents,
+    electionDay: electionDay!,
     maxMinutes,
-    leadSeconds,
     paymentTtlMinutes,
     imageMaxBytes,
     storageDir,

@@ -1,4 +1,5 @@
-import type { Quote } from './pricing';
+import { priceTierOf, type PriceTier, type Quote } from './pricing';
+import type { ElectionDay } from './sponsorship-config';
 import type { SponsorshipSlot } from './slots';
 import type { OrderInput } from './validation';
 
@@ -8,6 +9,7 @@ export interface Sponsorship {
   id: string;
   slot: SponsorshipSlot;
   minutes: number;
+  priceTier: PriceTier;
   unitPriceCents: number;
   amountCents: number;
   advertiserName: string;
@@ -40,6 +42,7 @@ export function newPendingOrder(args: {
     id: args.id,
     slot: args.input.slot,
     minutes: args.input.minutes,
+    priceTier: args.quote.priceTier,
     unitPriceCents: args.quote.unitPriceCents,
     amountCents: args.quote.amountCents,
     advertiserName: args.input.advertiserName,
@@ -72,20 +75,31 @@ export function effectiveStatus(
 }
 
 /**
- * Janela no ar (R-5): começa em `max(agora + LEAD, fim da fila do local)` e dura `minutes`.
+ * Janela no ar (R-5): começa em `max(agora, fim da fila do local)` — local livre entra no ar no
+ * instante do pagamento — e dura `minutes`.
  */
 export function schedule(
   now: Date,
   minutes: number,
   queueEnd: Date | null,
-  leadSeconds: number,
 ): { startsAt: Date; endsAt: Date } {
-  const earliest = now.getTime() + leadSeconds * 1000;
-  const start = Math.max(earliest, queueEnd?.getTime() ?? 0);
+  const start = Math.max(now.getTime(), queueEnd?.getTime() ?? 0);
   return { startsAt: new Date(start), endsAt: new Date(start + minutes * MINUTE_MS) };
 }
 
-/** "Entra em X minutos" = minutos inteiros arredondados para cima (R-6). */
+/** "Entra em X minutos" = minutos inteiros arredondados para cima; `0` = já no ar (R-6). */
 export function startsInMinutes(confirmedAt: Date, startsAt: Date): number {
   return Math.ceil((startsAt.getTime() - confirmedAt.getTime()) / MINUTE_MS);
+}
+
+/**
+ * A faixa da janela real (calculada na confirmação) é a mesma congelada no pedido? Se não, o
+ * pagamento é recusado com `price_changed` (spec sponsorship-election-pricing R-5).
+ */
+export function confirmationTierMatches(
+  order: Pick<Sponsorship, 'priceTier'>,
+  window: { startsAt: Date; endsAt: Date },
+  electionDay: Pick<ElectionDay, 'startsAt' | 'endsAt'>,
+): boolean {
+  return priceTierOf(window, electionDay) === order.priceTier;
 }

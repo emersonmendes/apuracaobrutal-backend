@@ -1,8 +1,12 @@
 import type { SponsorshipSlot } from '../slots';
+import type { ElectionDay } from '../sponsorship-config';
 import type { Sponsorship } from '../scheduling';
 
 export type ConfirmOutcome =
-  { kind: 'not_found' } | { kind: 'expired' } | { kind: 'scheduled'; sponsorship: Sponsorship };
+  | { kind: 'not_found' }
+  | { kind: 'expired' }
+  | { kind: 'price_changed' }
+  | { kind: 'scheduled'; sponsorship: Sponsorship };
 
 export interface ScheduleItem {
   id: string;
@@ -18,9 +22,11 @@ export interface SponsorshipRepository {
   queueEnds(): Promise<Partial<Record<SponsorshipSlot, Date>>>;
   /**
    * Confirma o pagamento numa transação com bloqueio por local (R-5, R-9): idempotente para
-   * `scheduled`; vencido vira `expired`; senão agenda com {@link schedule} do domínio.
+   * `scheduled`; vencido vira `expired`; senão calcula a janela com {@link schedule} do domínio e,
+   * se a faixa de preço mudou ({@link confirmationTierMatches}), grava `expired` e devolve
+   * `price_changed` sem agendar (sponsorship-election-pricing R-5).
    */
-  confirm(id: string, now: Date, leadSeconds: number): Promise<ConfirmOutcome>;
+  confirm(id: string, now: Date, electionDay: ElectionDay): Promise<ConfirmOutcome>;
   /** `scheduled` com `endsAt > from` e `startsAt < to`, por `startsAt`. */
   scheduleWindow(from: Date, to: Date): Promise<ScheduleItem[]>;
   /** Marca `expired` os pendentes vencidos e devolve as chaves de imagem deles. */

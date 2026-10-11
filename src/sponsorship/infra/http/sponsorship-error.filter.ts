@@ -7,11 +7,16 @@ import {
 import type { Response } from 'express';
 import { SponsorshipError } from '../../domain/errors';
 
-const STATUS: Record<string, number> = { unavailable: 503, not_found: 404, expired: 409 };
+const STATUS: Record<string, number> = {
+  unavailable: 503,
+  not_found: 404,
+  expired: 409,
+  price_changed: 409,
+};
 
 /**
  * Traduz erros do domínio para HTTP (spec sponsorships FR-03): validação → 400 `{ code }`,
- * `unavailable` → 503, `not_found` → 404, `expired` → 409. O limite de tamanho do multer vira
+ * `unavailable` → 503, `not_found` → 404, `expired` e `price_changed` → 409. O limite de tamanho do multer vira
  * `400 image_too_large`.
  */
 @Catch(SponsorshipError, PayloadTooLargeException)

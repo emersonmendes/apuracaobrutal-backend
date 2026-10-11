@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { SponsorshipError } from '../domain/errors';
 import { OUTPUT_MAX_SIDE_PX, detectImageFormat, dimensionsAllowed } from '../domain/image-rules';
-import { quote } from '../domain/pricing';
-import { newPendingOrder } from '../domain/scheduling';
+import { priceTierOf, quote } from '../domain/pricing';
+import { newPendingOrder, schedule } from '../domain/scheduling';
 import { purchaseAvailable, type SponsorshipConfig } from '../domain/sponsorship-config';
 import { validateOrderInput, type RawOrderInput } from '../domain/validation';
 import type { Clock } from '../domain/ports/clock';
@@ -48,7 +48,13 @@ export class CreateSponsorship {
     const imageKey = `${id}.webp`;
     await this.storage.save(imageKey, webp);
     try {
-      const price = quote(input.slot, input.minutes, this.config);
+      // Preço só do backend: janela prevista pela fila atual do local → faixa → cotação
+      // (sponsorship-election-pricing R-4). Nenhum campo de preço vem do cliente.
+      const now = this.clock.now();
+      const queueEnd = (await this.repository.queueEnds())[input.slot] ?? null;
+      const predicted = schedule(now, input.minutes, queueEnd);
+      const tier = priceTierOf(predicted, this.config.electionDay);
+      const price = quote(input.slot, input.minutes, tier, this.config);
       const { chargeId } = await this.gateway.createCharge({
         sponsorshipId: id,
         amountCents: price.amountCents,
@@ -61,7 +67,7 @@ export class CreateSponsorship {
         imageKey,
         gateway: this.gateway.name,
         chargeId,
-        now: this.clock.now(),
+        now,
         paymentTtlMinutes: this.config.paymentTtlMinutes,
       });
       await this.repository.create(order);

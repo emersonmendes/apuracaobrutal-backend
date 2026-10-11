@@ -10,7 +10,9 @@ export type ValidationErrorCode =
 
 /** Erro de domínio do módulo; o filtro HTTP traduz o `code` para o status (FR-03). */
 export class SponsorshipError extends Error {
-  constructor(readonly code: ValidationErrorCode | 'unavailable' | 'not_found' | 'expired') {
+  constructor(
+    readonly code: ValidationErrorCode | 'unavailable' | 'not_found' | 'expired' | 'price_changed',
+  ) {
     super(code);
     this.name = 'SponsorshipError';
   }

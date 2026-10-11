@@ -129,7 +129,9 @@ export class SponsorshipsController {
   @ApiResponse({
     status: 409,
     type: SponsorshipErrorDto,
-    description: 'Prazo de pagamento vencido',
+    description:
+      'expired: prazo de pagamento vencido · price_changed: a janela no ar mudou de faixa de preço ' +
+      '(dia da eleição) desde a criação; o pedido expira e deve ser refeito',
   })
   @ApiResponse({ status: 503, description: 'Compra indisponível (gateway simulado em produção)' })
   simulatedPayment(@Param('id', idPipe) id: string): Promise<PublicSponsorship> {
