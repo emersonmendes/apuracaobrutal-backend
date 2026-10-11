@@ -29,6 +29,21 @@ export interface ModerationPolicyConfig {
   maxPerHour: number;
 }
 
+/** Onde as imagens reprocessadas ficam (spec sponsorship-s3-storage FR-01, R-1). */
+export type StorageConfig =
+  | { kind: 'local'; dir: string }
+  | {
+      kind: 's3';
+      bucket: string;
+      region: string;
+      /** Profile do `~/.aws` (desenvolvimento); nulo → cadeia padrão do SDK (IAM role). */
+      profile: string | null;
+      /** S3 compatível (desenvolvimento); nulo → endpoint oficial da região. */
+      endpoint: string | null;
+      /** Timeout por tentativa de cada chamada. */
+      timeoutMs: number;
+    };
+
 /** Configuração do módulo de patrocínios (spec sponsorships FR-01; asaas-payment FR-01). */
 export interface SponsorshipConfig {
   gateway: PaymentGatewayName;
@@ -45,7 +60,8 @@ export interface SponsorshipConfig {
   maxMinutes: number;
   paymentTtlMinutes: number;
   imageMaxBytes: number;
-  storageDir: string;
+  /** Adapter da porta `SponsorImageStorage` (sponsorship-s3-storage R-1). */
+  storage: StorageConfig;
   createLimitPerHour: number;
   moderation: ModerationPolicyConfig;
 }

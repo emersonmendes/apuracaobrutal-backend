@@ -11,7 +11,8 @@ import {
 
 /**
  * Moderação automática de imagens (spec sponsorship-image-moderation FR-04). Só o worker importa
- * este módulo: o backend HTTP nunca lê credenciais da AWS (FR-01).
+ * este módulo: o backend HTTP só usa credenciais da AWS para o S3 das imagens
+ * (sponsorship-s3-storage), nunca para o Rekognition (FR-01).
  */
 @Module({
   providers: [

@@ -1,5 +1,10 @@
 import { standardTable } from '../../domain/pricing';
-import type { AsaasConfig, ElectionDay, SponsorshipConfig } from '../../domain/sponsorship-config';
+import type {
+  AsaasConfig,
+  ElectionDay,
+  SponsorshipConfig,
+  StorageConfig,
+} from '../../domain/sponsorship-config';
 
 export const SPONSORSHIP_CONFIG = Symbol('SPONSORSHIP_CONFIG');
 
@@ -143,6 +148,61 @@ function parseAsaasConfig(env: Env, problems: string[]): AsaasConfig {
  * `SPONSORSHIP_WORKER_ENABLED` (spec sponsorships FR-01, FR-05): só o worker lê. `false` desliga os
  * laços de patrocínio (limpeza, estorno, moderação); padrão `true`; outro valor não sobe.
  */
+const DEFAULT_REGION = 'us-east-1';
+/** Mesma validação de `AWS_REGION` da moderação (sponsorship-image-moderation FR-01). */
+const REGION_PATTERN = /^[a-z]{2}(-[a-z]+)+-\d$/;
+/** Nome de bucket: 3–63 caracteres `a-z0-9.-`, começa e termina com letra ou dígito. */
+const BUCKET_PATTERN = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+
+/**
+ * Onde as imagens ficam (spec sponsorship-s3-storage FR-01, R-1, R-4): `local` (padrão; recusado
+ * em produção) ou `s3`. Com `local`, as `SPONSORSHIP_S3_*` são ignoradas.
+ */
+function parseStorageConfig(env: Env, problems: string[]): StorageConfig {
+  const kind = value(env, 'SPONSORSHIP_STORAGE', 'local');
+  const production = env.NODE_ENV === 'production';
+  if (kind !== 'local' && kind !== 's3') {
+    problems.push('SPONSORSHIP_STORAGE aceita apenas "local" ou "s3"');
+  }
+  if (kind !== 's3') {
+    if (production) {
+      problems.push(
+        'SPONSORSHIP_STORAGE=local não é permitido com NODE_ENV=production (backend e worker não compartilham disco)',
+      );
+    }
+    return { kind: 'local', dir: value(env, 'SPONSORSHIP_STORAGE_DIR', './storage/sponsorships') };
+  }
+  const bucket = value(env, 'SPONSORSHIP_S3_BUCKET', '');
+  if (bucket === '')
+    problems.push('SPONSORSHIP_S3_BUCKET é obrigatória com SPONSORSHIP_STORAGE=s3');
+  else if (!BUCKET_PATTERN.test(bucket)) {
+    problems.push(
+      `SPONSORSHIP_S3_BUCKET deve ser um nome de bucket válido (recebido: "${bucket}")`,
+    );
+  }
+  const region = value(env, 'AWS_REGION', DEFAULT_REGION);
+  if (!REGION_PATTERN.test(region)) {
+    problems.push(`AWS_REGION deve ser uma região da AWS, ex.: us-east-1 (recebido: "${region}")`);
+  }
+  const rawProfile = value(env, 'AWS_PROFILE', '');
+  const endpoint = value(env, 'SPONSORSHIP_S3_ENDPOINT', '');
+  if (endpoint !== '' && !/^https?:\/\/\S+$/.test(endpoint)) {
+    problems.push('SPONSORSHIP_S3_ENDPOINT deve ser uma URL http(s)://');
+  }
+  if (endpoint !== '' && production) {
+    problems.push('SPONSORSHIP_S3_ENDPOINT não é permitida com NODE_ENV=production');
+  }
+  const timeoutMs = integer(env, 'SPONSORSHIP_S3_TIMEOUT_MS', 10_000, 1_000, problems);
+  return {
+    kind: 's3',
+    bucket,
+    region,
+    profile: rawProfile === '' ? null : rawProfile,
+    endpoint: endpoint === '' ? null : endpoint,
+    timeoutMs,
+  };
+}
+
 export function parseSponsorshipWorkerEnabled(env: Env): boolean {
   const raw = value(env, 'SPONSORSHIP_WORKER_ENABLED', 'true').toLowerCase();
   if (raw === 'true') return true;
@@ -183,7 +243,7 @@ export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
   const paymentTtlMinutes = integer(env, 'SPONSORSHIP_PAYMENT_TTL_MINUTES', 30, 5, problems);
   const imageMaxBytes = integer(env, 'SPONSORSHIP_IMAGE_MAX_BYTES', 2_097_152, 1, problems);
   const createLimitPerHour = integer(env, 'SPONSORSHIP_CREATE_LIMIT_PER_HOUR', 10, 1, problems);
-  const storageDir = value(env, 'SPONSORSHIP_STORAGE_DIR', './storage/sponsorships');
+  const storage = parseStorageConfig(env, problems);
 
   // Moderação automática (sponsorship-image-moderation FR-01).
   const maxAttempts = integer(env, 'SPONSORSHIP_MODERATION_MAX_ATTEMPTS', 3, 1, problems);
@@ -202,7 +262,7 @@ export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
     maxMinutes,
     paymentTtlMinutes,
     imageMaxBytes,
-    storageDir,
+    storage,
     createLimitPerHour,
     moderation: { maxAttempts, maxPerHour },
   };

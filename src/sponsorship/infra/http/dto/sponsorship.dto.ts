@@ -188,6 +188,7 @@ export class SponsorshipErrorDto {
       'price_changed',
       'already_paid',
       'gateway_error',
+      'storage_error',
       'moderation_pending',
       'moderation_rejected',
       'moderation_error',

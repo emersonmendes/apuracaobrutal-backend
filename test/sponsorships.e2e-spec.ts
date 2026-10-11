@@ -6,10 +6,12 @@ import * as request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/config/configure-app';
 import { createSwaggerDocument } from '../src/config/swagger';
+import { FakePaymentGateway } from '../src/sponsorship/application/__fakes__/fake-payment-gateway';
 import { FakeClock, testConfig } from '../src/sponsorship/application/__fakes__/fixtures';
 import { InMemoryImageStorage } from '../src/sponsorship/application/__fakes__/in-memory-image-storage';
 import { InMemorySponsorshipRepository } from '../src/sponsorship/application/__fakes__/in-memory-sponsorship-repository';
 import { SPONSORSHIP_CLOCK } from '../src/sponsorship/domain/ports/clock';
+import { PAYMENT_GATEWAY } from '../src/sponsorship/domain/ports/payment-gateway';
 import { SPONSOR_IMAGE_STORAGE } from '../src/sponsorship/domain/ports/sponsor-image-storage';
 import { SPONSORSHIP_REPOSITORY } from '../src/sponsorship/domain/ports/sponsorship-repository';
 import type { SponsorshipConfig } from '../src/sponsorship/domain/sponsorship-config';
@@ -408,6 +410,89 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
         'GET /sponsorships/{id}/image',
         'GET /sponsorships/{id}/payment',
       ].sort(),
+    );
+  });
+});
+
+describe('Sponsorships — falha do armazenamento (e2e) — specs/sponsorship-s3-storage FR-04 (AC-09)', () => {
+  const env = { ...process.env };
+  let app: INestApplication;
+  let repository: InMemorySponsorshipRepository;
+  let storage: InMemoryImageStorage;
+  let gateway: FakePaymentGateway;
+  let png: Buffer;
+
+  const post = () =>
+    request(app.getHttpServer())
+      .post('/sponsorships')
+      .field('slot', 'center')
+      .field('minutes', '2')
+      .field('advertiserName', NAME)
+      .field('email', EMAIL)
+      .field('cpfCnpj', CPF)
+      .field('acceptTerms', 'true')
+      .attach('image', png, 'logo.png');
+
+  beforeAll(async () => {
+    Logger.overrideLogger(false);
+    delete process.env.CORS_ORIGINS;
+    process.env.PAYMENT_GATEWAY = 'simulated';
+    process.env.SPONSORSHIP_IMAGE_MAX_BYTES = '200000';
+    process.env.SPONSORSHIP_CREATE_LIMIT_PER_HOUR = '1000';
+    png = await solid(400, 200).png().toBuffer();
+    repository = new InMemorySponsorshipRepository();
+    repository.autoApprove = true;
+    storage = new InMemoryImageStorage();
+    gateway = new FakePaymentGateway();
+    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(SPONSORSHIP_REPOSITORY)
+      .useValue(repository)
+      .overrideProvider(SPONSOR_IMAGE_STORAGE)
+      .useValue(storage)
+      .overrideProvider(PAYMENT_GATEWAY)
+      .useValue(gateway)
+      .overrideProvider(SPONSORSHIP_CLOCK)
+      .useValue(new FakeClock())
+      .compile();
+    app = moduleRef.createNestApplication();
+    configureApp(app);
+    await app.init();
+  });
+
+  afterAll(async () => {
+    process.env = env;
+    await app.close();
+  });
+
+  it('POST /sponsorships com save falhando → 503 storage_error, sem pedido e sem cobrança', async () => {
+    storage.failNext = 'save';
+    const res = await post().expect(503);
+    expect(res.body).toEqual({ code: 'storage_error' });
+    expect(repository.rows.size).toBe(0);
+    expect(gateway.calls.createCharge).toBe(0);
+    expect(storage.files.size).toBe(0);
+  });
+
+  it('GET /sponsorships/:id/image com read falhando → 503 storage_error; depois volta a 200', async () => {
+    const { id } = (await post().expect(201)).body as { id: string };
+    await request(app.getHttpServer()).post(`/sponsorships/${id}/simulated-payment`).expect(200);
+    storage.failNext = 'read';
+    const failed = await request(app.getHttpServer()).get(`/sponsorships/${id}/image`).expect(503);
+    expect(failed.body).toEqual({ code: 'storage_error' });
+    await request(app.getHttpServer()).get(`/sponsorships/${id}/image`).expect(200);
+  });
+
+  it('documento OpenAPI lista o 503 storage_error nos dois endpoints', () => {
+    const doc = createSwaggerDocument(app) as unknown as {
+      paths: Record<string, Record<string, { responses: Record<string, { description: string }> }>>;
+      components: { schemas: Record<string, { properties: { code: { enum: string[] } } }> };
+    };
+    expect(doc.paths['/sponsorships'].post.responses['503'].description).toContain('storage_error');
+    expect(doc.paths['/sponsorships/{id}/image'].get.responses['503'].description).toContain(
+      'storage_error',
+    );
+    expect(doc.components.schemas.SponsorshipErrorDto.properties.code.enum).toContain(
+      'storage_error',
     );
   });
 });

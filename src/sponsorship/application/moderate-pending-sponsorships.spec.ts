@@ -267,6 +267,24 @@ describe('ModeratePendingSponsorships — spec sponsorship-image-moderation FR-0
     });
   });
 
+  it('falha do armazenamento na leitura não consome tentativa (sponsorship-s3-storage AC-15)', async () => {
+    const s = setup();
+    const order = await s.addOrder();
+    const row = s.repository.rows.get(order.id)!;
+    s.storage.failNext = 'read';
+    await expect(s.useCase.execute()).rejects.toMatchObject({ code: 'storage_error' });
+    expect(s.repository.moderationRecords).toHaveLength(0);
+    expect(row).toMatchObject({ moderation: 'pending', moderationAttempts: 0 });
+    // Reivindicação vale por 2 × timeout: enquanto isso, nada a processar.
+    expect(await s.useCase.execute()).toEqual({ processed: 0 });
+    // Armazenamento de volta e reivindicação vencida → analisado normalmente.
+    s.clock.advance(2 * TIMEOUT_MS + 1);
+    s.analyzer.respond(ok());
+    expect(await s.useCase.execute()).toEqual({ processed: 1, outcome: 'approved' });
+    expect(s.repository.moderationRecords).toHaveLength(1);
+    expect(row).toMatchObject({ moderation: 'approved', moderationAttempts: 1 });
+  });
+
   it('pedido expirado durante a análise: registro gravado, pedido intacto (AC-18)', async () => {
     const s = setup();
     const order = await s.addOrder();

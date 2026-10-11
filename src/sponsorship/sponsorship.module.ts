@@ -26,10 +26,10 @@ import {
   type SponsorshipRepository,
 } from './domain/ports/sponsorship-repository';
 import { AsaasPaymentGateway } from './infra/adapters/asaas-payment-gateway';
-import { LocalDiskImageStorage } from './infra/adapters/local-disk-image-storage';
 import { PrismaSponsorshipRepository } from './infra/adapters/prisma-sponsorship-repository';
 import { SharpImageProcessor } from './infra/adapters/sharp-image-processor';
 import { SimulatedPaymentGateway } from './infra/adapters/simulated-payment-gateway';
+import { createImageStorage } from './infra/config/image-storage.provider';
 import {
   SPONSORSHIP_CONFIG,
   parseSponsorshipConfig,
@@ -48,9 +48,11 @@ export const SPONSORSHIP_CORE_PROVIDERS = [
     useFactory: (prisma: PrismaService) => new PrismaSponsorshipRepository(prisma),
     inject: [PrismaService],
   },
+  // Adapter de armazenamento conforme SPONSORSHIP_STORAGE (sponsorship-s3-storage FR-03).
   {
     provide: SPONSOR_IMAGE_STORAGE,
-    useFactory: (config: SponsorshipConfig) => new LocalDiskImageStorage(config.storageDir),
+    useFactory: (config: SponsorshipConfig) =>
+      createImageStorage(config, new Logger('SponsorImageStorage')),
     inject: [SPONSORSHIP_CONFIG],
   },
   // Adapter da porta de cobrança conforme PAYMENT_GATEWAY (sponsorships R-9; asaas-payment R-1).

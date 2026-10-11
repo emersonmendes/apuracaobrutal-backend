@@ -45,3 +45,26 @@ export class GatewayError extends Error {
     this.name = 'GatewayError';
   }
 }
+
+export type StorageOperation = 'save' | 'read' | 'remove';
+
+/**
+ * Falha de infraestrutura do armazenamento de imagens (spec sponsorship-s3-storage R-3, FR-04):
+ * acesso negado, rede, timeout após as tentativas, resposta inválida, erro de disco que não seja
+ * "não existe". A mensagem carrega só operação, chave, nome do erro e status HTTP — nunca
+ * credenciais, cabeçalhos nem a imagem (R-4). O filtro HTTP responde `503 storage_error`.
+ */
+export class StorageError extends Error {
+  readonly code = 'storage_error' as const;
+  constructor(
+    readonly operation: StorageOperation,
+    readonly key: string,
+    readonly cause: { name?: string | null; status?: number | null } = {},
+  ) {
+    super(
+      `armazenamento de imagens: falha em ${operation} de ${key}` +
+        (cause.name ? ` (${cause.name}` + (cause.status ? ` ${cause.status}` : '') + ')' : ''),
+    );
+    this.name = 'StorageError';
+  }
+}

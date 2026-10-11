@@ -1,15 +1,14 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { StorageError, type StorageOperation } from '../../domain/errors';
 import type { SponsorImageStorage } from '../../domain/ports/sponsor-image-storage';
+import { assertImageKey } from './image-key';
 
-/** Só chaves geradas pelo backend (`<uuid>.webp`): impede path traversal. */
-const KEY = /^[0-9a-f-]{36}\.webp$/;
-
-function assertKey(key: string) {
-  if (!KEY.test(key)) throw new Error(`chave de imagem inválida: ${key}`);
-}
-
-/** Armazena as imagens reprocessadas numa pasta local/volume (spec sponsorships FR-01). */
+/**
+ * Armazena as imagens reprocessadas numa pasta local/volume (spec sponsorships FR-01). Só com
+ * `SPONSORSHIP_STORAGE=local` (sponsorship-s3-storage R-1); erros de disco que não sejam
+ * `ENOENT` viram `StorageError` (R-3).
+ */
 export class LocalDiskImageStorage implements SponsorImageStorage {
   private readonly dir: string;
 
@@ -18,23 +17,36 @@ export class LocalDiskImageStorage implements SponsorImageStorage {
   }
 
   async save(key: string, bytes: Buffer): Promise<void> {
-    assertKey(key);
-    await mkdir(this.dir, { recursive: true });
-    await writeFile(join(this.dir, key), bytes);
+    assertImageKey(key);
+    try {
+      await mkdir(this.dir, { recursive: true });
+      await writeFile(join(this.dir, key), bytes);
+    } catch (error) {
+      throw toStorageError('save', key, error);
+    }
   }
 
   async read(key: string): Promise<Buffer | null> {
-    assertKey(key);
+    assertImageKey(key);
     try {
       return await readFile(join(this.dir, key));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw error;
+      throw toStorageError('read', key, error);
     }
   }
 
   async remove(key: string): Promise<void> {
-    assertKey(key);
-    await rm(join(this.dir, key), { force: true });
+    assertImageKey(key);
+    try {
+      await rm(join(this.dir, key), { force: true });
+    } catch (error) {
+      throw toStorageError('remove', key, error);
+    }
   }
+}
+
+function toStorageError(operation: StorageOperation, key: string, error: unknown): StorageError {
+  const { code, name } = (error ?? {}) as NodeJS.ErrnoException;
+  return new StorageError(operation, key, { name: code ?? name ?? null });
 }

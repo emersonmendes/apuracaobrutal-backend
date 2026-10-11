@@ -122,7 +122,12 @@ export class SponsorshipsController {
     type: SponsorshipErrorDto,
     description: 'gateway_error: falha ao criar a cobrança no Asaas',
   })
-  @ApiResponse({ status: 503, description: 'Compra indisponível (gateway simulado em produção)' })
+  @ApiResponse({
+    status: 503,
+    type: SponsorshipErrorDto,
+    description:
+      'unavailable: compra indisponível (gateway simulado em produção); storage_error: falha ao guardar a imagem',
+  })
   create(
     @Body() body: MultipartFields,
     @UploadedFile() image: Express.Multer.File | undefined,
@@ -205,6 +210,11 @@ export class SponsorshipsController {
   @ApiProduces('image/webp')
   @ApiResponse({ status: 200, description: 'Imagem WebP' })
   @ApiResponse({ status: 404, description: 'Inexistente, não pago, não aprovado ou sem imagem' })
+  @ApiResponse({
+    status: 503,
+    type: SponsorshipErrorDto,
+    description: 'storage_error: falha ao ler a imagem no armazenamento',
+  })
   async image(@Param('id', idPipe) id: string, @Res() res: Response): Promise<void> {
     const bytes = await this.readImage.execute(id);
     res

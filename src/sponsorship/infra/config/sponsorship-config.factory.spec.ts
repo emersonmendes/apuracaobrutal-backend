@@ -42,7 +42,7 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
       maxMinutes: 60,
       paymentTtlMinutes: 30,
       imageMaxBytes: 2_097_152,
-      storageDir: './storage/sponsorships',
+      storage: { kind: 'local', dir: './storage/sponsorships' },
       createLimitPerHour: 10,
       moderation: { maxAttempts: 3, maxPerHour: 200 },
     });
@@ -58,8 +58,11 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
   });
 
   it('lê os valores do ambiente e marca produção', () => {
+    // Em produção o armazenamento local é recusado (sponsorship-s3-storage R-1).
     const config = parseSponsorshipConfig({
       NODE_ENV: 'production',
+      SPONSORSHIP_STORAGE: 's3',
+      SPONSORSHIP_S3_BUCKET: 'apuracaobrutal-prod-sponsorship-images',
       SPONSORSHIP_PRICE_GLOVE_CENTS: '250000',
       SPONSORSHIP_MAX_MINUTES: '10',
     });
@@ -151,6 +154,93 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
     } catch (error) {
       expect((error as InvalidSponsorshipConfigError).problems).toHaveLength(2);
     }
+  });
+
+  describe('armazenamento — spec sponsorship-s3-storage FR-01 (AC-01)', () => {
+    const s3 = (overrides: Record<string, string | undefined> = {}) =>
+      parseSponsorshipConfig({
+        SPONSORSHIP_STORAGE: 's3',
+        SPONSORSHIP_S3_BUCKET: 'apuracaobrutal-prod-sponsorship-images',
+        ...overrides,
+      });
+
+    it('padrão local com a pasta de SPONSORSHIP_STORAGE_DIR', () => {
+      expect(parseSponsorshipConfig({ SPONSORSHIP_STORAGE_DIR: '/data/img' }).storage).toEqual({
+        kind: 'local',
+        dir: '/data/img',
+      });
+    });
+
+    it('s3 devolve bucket, região, profile, endpoint e timeout (padrões e valores do ambiente)', () => {
+      expect(s3().storage).toEqual({
+        kind: 's3',
+        bucket: 'apuracaobrutal-prod-sponsorship-images',
+        region: 'us-east-1',
+        profile: null,
+        endpoint: null,
+        timeoutMs: 10_000,
+      });
+      expect(
+        s3({
+          AWS_REGION: 'sa-east-1',
+          AWS_PROFILE: 'puoro',
+          SPONSORSHIP_S3_ENDPOINT: 'http://localhost:9000',
+          SPONSORSHIP_S3_TIMEOUT_MS: '2500',
+        }).storage,
+      ).toEqual({
+        kind: 's3',
+        bucket: 'apuracaobrutal-prod-sponsorship-images',
+        region: 'sa-east-1',
+        profile: 'puoro',
+        endpoint: 'http://localhost:9000',
+        timeoutMs: 2_500,
+      });
+    });
+
+    it.each([
+      ['SPONSORSHIP_STORAGE', { SPONSORSHIP_STORAGE: 'disk' }],
+      ['SPONSORSHIP_S3_BUCKET', { SPONSORSHIP_S3_BUCKET: '' }],
+      ['SPONSORSHIP_S3_BUCKET', { SPONSORSHIP_S3_BUCKET: 'AB' }],
+      ['SPONSORSHIP_S3_BUCKET', { SPONSORSHIP_S3_BUCKET: 'my_bucket' }],
+      ['AWS_REGION', { AWS_REGION: 'x' }],
+      ['SPONSORSHIP_S3_TIMEOUT_MS', { SPONSORSHIP_S3_TIMEOUT_MS: '999' }],
+      ['SPONSORSHIP_S3_ENDPOINT', { SPONSORSHIP_S3_ENDPOINT: 'localhost:9000' }],
+    ])('%s inválida impede a inicialização citando a variável', (name, overrides) => {
+      expect(() => s3(overrides)).toThrow(InvalidSponsorshipConfigError);
+      expect(() => s3(overrides)).toThrow(new RegExp(name));
+    });
+
+    it('local é recusado em produção (R-1); s3 é aceito', () => {
+      expect(() => parseSponsorshipConfig({ NODE_ENV: 'production' })).toThrow(
+        /SPONSORSHIP_STORAGE=local não é permitido/,
+      );
+      expect(s3({ NODE_ENV: 'production' }).storage.kind).toBe('s3');
+    });
+
+    it('endpoint alternativo é recusado em produção (R-4)', () => {
+      expect(() =>
+        s3({ NODE_ENV: 'production', SPONSORSHIP_S3_ENDPOINT: 'https://minio.interno' }),
+      ).toThrow(/SPONSORSHIP_S3_ENDPOINT não é permitida/);
+    });
+
+    it('com local as SPONSORSHIP_S3_* são ignoradas', () => {
+      expect(
+        parseSponsorshipConfig({
+          SPONSORSHIP_S3_BUCKET: 'AB',
+          SPONSORSHIP_S3_TIMEOUT_MS: '1',
+          SPONSORSHIP_S3_ENDPOINT: 'nada',
+        }).storage.kind,
+      ).toBe('local');
+    });
+
+    it('acumula com os demais problemas', () => {
+      try {
+        s3({ SPONSORSHIP_S3_BUCKET: '', SPONSORSHIP_MAX_MINUTES: 'x' });
+        fail('deveria lançar');
+      } catch (error) {
+        expect((error as InvalidSponsorshipConfigError).problems).toHaveLength(2);
+      }
+    });
   });
 
   describe('preço por período — spec sponsorship-election-pricing FR-01 (AC-02)', () => {
