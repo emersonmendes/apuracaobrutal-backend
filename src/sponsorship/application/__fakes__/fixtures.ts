@@ -32,7 +32,7 @@ export function testConfig(overrides: Partial<SponsorshipConfig> = {}): Sponsors
     },
     maxMinutes: 60,
     paymentTtlMinutes: 30,
-    imageMaxBytes: 2_097_152,
+    imageMaxBytes: 3_145_728,
     storage: { kind: 'local', dir: '/tmp/unused' },
     createLimitPerHour: 10,
     moderation: { maxAttempts: 3, maxPerHour: 200 },

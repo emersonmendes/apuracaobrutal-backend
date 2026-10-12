@@ -41,7 +41,7 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
       },
       maxMinutes: 60,
       paymentTtlMinutes: 30,
-      imageMaxBytes: 2_097_152,
+      imageMaxBytes: 3_145_728,
       storage: { kind: 'local', dir: './storage/sponsorships' },
       createLimitPerHour: 10,
       moderation: { maxAttempts: 3, maxPerHour: 200 },

@@ -241,7 +241,7 @@ export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
   }
   const maxMinutes = integer(env, 'SPONSORSHIP_MAX_MINUTES', 60, 1, problems);
   const paymentTtlMinutes = integer(env, 'SPONSORSHIP_PAYMENT_TTL_MINUTES', 30, 5, problems);
-  const imageMaxBytes = integer(env, 'SPONSORSHIP_IMAGE_MAX_BYTES', 2_097_152, 1, problems);
+  const imageMaxBytes = integer(env, 'SPONSORSHIP_IMAGE_MAX_BYTES', 3_145_728, 1, problems);
   const createLimitPerHour = integer(env, 'SPONSORSHIP_CREATE_LIMIT_PER_HOUR', 10, 1, problems);
   const storage = parseStorageConfig(env, problems);
 
