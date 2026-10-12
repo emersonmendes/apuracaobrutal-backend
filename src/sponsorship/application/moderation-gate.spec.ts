@@ -99,6 +99,20 @@ describe('gate de pagamento (R-7; AC-11, AC-13)', () => {
     expect(await codeOf(s.instructions.execute(created.id))).toBe('moderation_pending');
   });
 
+  it('simulado: pendente e vencido → expired e grava expired por prazo (sponsorships R-9 antes de R-7)', async () => {
+    const s = setup();
+    const created = await s.create.execute(input, PNG_HEADER);
+    s.clock.advance(31 * 60_000);
+    expect(await codeOf(s.confirm.execute(created.id))).toBe('expired');
+    expect(s.repository.rows.get(created.id)).toMatchObject({
+      status: 'expired',
+      expiryReason: 'payment_timeout',
+      moderation: 'pending',
+      paidAt: null,
+    });
+    expect(await codeOf(s.instructions.execute(created.id))).toBe('expired');
+  });
+
   it('simulado: recusada → moderation_rejected; erro → moderation_error (cenário 23)', async () => {
     const s = setup();
     const created = await s.create.execute(input, PNG_HEADER);
@@ -149,6 +163,29 @@ describe('gate de pagamento (R-7; AC-11, AC-13)', () => {
       refund: 'requested',
       paidAt: s.clock.now(),
       paymentMethod: 'pix',
+      moderation: 'pending',
+    });
+  });
+
+  it('webhook de pendente vencido → payment_timeout e estorno, não moderation_pending (asaas-payment R-5)', async () => {
+    const s = setup('asaas');
+    const created = await s.create.execute(input, PNG_HEADER);
+    s.clock.advance(31 * 60_000);
+    const outcome = await s.webhook.execute({
+      id: 'evt_late',
+      event: 'PAYMENT_RECEIVED',
+      payment: {
+        id: s.gateway.chargeIdOf(created.id),
+        externalReference: created.id,
+        value: 6000,
+        billingType: 'PIX',
+      },
+    });
+    expect(outcome).toBe('refund_requested');
+    expect(s.repository.rows.get(created.id)).toMatchObject({
+      status: 'expired',
+      expiryReason: 'payment_timeout',
+      refund: 'requested',
       moderation: 'pending',
     });
   });

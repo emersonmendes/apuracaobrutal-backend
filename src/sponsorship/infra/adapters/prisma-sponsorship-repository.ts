@@ -10,7 +10,7 @@ import {
 } from '../../domain/payment';
 import {
   confirmationTierMatches,
-  paymentExpired,
+  expiredByDeadline,
   schedule,
   type Sponsorship,
 } from '../../domain/scheduling';
@@ -92,16 +92,17 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
       if (row.status === 'scheduled') {
         return { kind: 'scheduled', sponsorship: toDomain(row) } as const;
       }
+      // Prazo vencido tem precedência sobre moderação pendente (R-9; sponsorship-image-moderation R-7).
+      if (expiredByDeadline(row, now)) {
+        const writes = expiryWrites(row, 'payment_timeout', received, now);
+        await tx.sponsorship.update({ where: { id }, data: writes });
+        return { kind: 'expired', refundRequested: writes.refund !== 'none' } as const;
+      }
       // Gate de moderação (sponsorship-image-moderation R-7): simulado → nada gravado; pagamento
       // real → expira com estorno.
       if (row.moderation !== 'approved') {
         if (!received) return { kind: 'not_approved', moderation: row.moderation } as const;
         const writes = expiryWrites(row, moderationExpiryReason(row), received, now);
-        await tx.sponsorship.update({ where: { id }, data: writes });
-        return { kind: 'expired', refundRequested: writes.refund !== 'none' } as const;
-      }
-      if (row.status === 'expired' || paymentExpired(row, now)) {
-        const writes = expiryWrites(row, 'payment_timeout', received, now);
         await tx.sponsorship.update({ where: { id }, data: writes });
         return { kind: 'expired', refundRequested: writes.refund !== 'none' } as const;
       }
@@ -146,22 +147,25 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
     }));
   }
 
+  /**
+   * Uma só instrução: `RETURNING` devolve apenas as linhas que esta atualização de fato expirou.
+   * Um pedido confirmado no mesmo instante (linha travada por `confirm()`) é reavaliado após o
+   * bloqueio e, já `scheduled`, fica de fora — a limpeza nunca apaga a imagem de um pago (FR-05).
+   */
   async expirePending(now: Date): Promise<ExpiredOrder[]> {
-    const where: Prisma.SponsorshipWhereInput = {
-      status: 'pending_payment',
-      paymentExpiresAt: { lte: now },
-    };
-    return this.transaction(async (tx) => {
-      const rows = await tx.sponsorship.findMany({
-        where,
-        select: { id: true, imageKey: true, paymentGateway: true, chargeId: true },
-      });
-      await tx.sponsorship.updateMany({
-        where: { ...where, id: { in: rows.map((row) => row.id) } },
-        data: { status: 'expired', expiryReason: 'payment_timeout' },
-      });
-      return rows;
-    });
+    const rows = await this.db.$queryRaw<
+      { id: string; image_key: string | null; payment_gateway: string; charge_id: string }[]
+    >`
+      UPDATE sponsorship
+      SET status = 'expired', expiry_reason = 'payment_timeout'
+      WHERE status = 'pending_payment' AND payment_expires_at <= ${now}
+      RETURNING id, image_key, payment_gateway, charge_id`;
+    return rows.map((row) => ({
+      id: row.id,
+      imageKey: row.image_key,
+      paymentGateway: row.payment_gateway,
+      chargeId: row.charge_id,
+    }));
   }
 
   async endedWithImage(before: Date): Promise<{ id: string; imageKey: string }[]> {

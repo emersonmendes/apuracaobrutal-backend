@@ -1,6 +1,6 @@
 import { SponsorshipError } from '../domain/errors';
 import { canReceivePayment } from '../domain/moderation-state';
-import { effectiveStatus } from '../domain/scheduling';
+import { effectiveStatus, expiredByDeadline } from '../domain/scheduling';
 import { sandboxPayments, type SponsorshipConfig } from '../domain/sponsorship-config';
 import type { Clock } from '../domain/ports/clock';
 import type { PaymentGateway, PixQrCode } from '../domain/ports/payment-gateway';
@@ -34,12 +34,13 @@ export class GetPaymentInstructions {
   async execute(id: string): Promise<PaymentInstructions> {
     const order = await this.repository.findById(id);
     if (!order) throw new SponsorshipError('not_found');
-    // Nada de QR, copia-e-cola ou fatura antes da aprovação (sponsorship-image-moderation R-7).
+    const now = this.clock.now();
+    // Prazo vencido vem antes do gate de moderação (sponsorship-image-moderation R-7).
+    if (expiredByDeadline(order, now)) throw new SponsorshipError('expired');
+    // Nada de QR, copia-e-cola ou fatura antes da aprovação (R-7).
     const gate = canReceivePayment(order);
     if (gate !== 'ok') throw new SponsorshipError(gate);
-    const status = effectiveStatus(order, this.clock.now());
-    if (status === 'scheduled') throw new SponsorshipError('already_paid');
-    if (status === 'expired') throw new SponsorshipError('expired');
+    if (effectiveStatus(order, now) === 'scheduled') throw new SponsorshipError('already_paid');
     if (order.paymentGateway !== 'asaas' || this.gateway.name !== 'asaas') {
       return { gateway: 'simulated', sandbox: true };
     }

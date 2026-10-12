@@ -7,6 +7,7 @@ import {
 } from '../../domain/payment';
 import {
   confirmationTierMatches,
+  expiredByDeadline,
   paymentExpired,
   schedule,
   type Sponsorship,
@@ -75,14 +76,14 @@ export class InMemorySponsorshipRepository implements SponsorshipRepository {
     const row = this.rows.get(id);
     if (!row) return { kind: 'not_found' };
     if (row.status === 'scheduled') return { kind: 'scheduled', sponsorship: { ...row } };
-    if (row.moderation !== 'approved') {
-      if (!received) return { kind: 'not_approved', moderation: row.moderation };
-      const writes = expiryWrites(row, moderationExpiryReason(row), received, now);
+    if (expiredByDeadline(row, now)) {
+      const writes = expiryWrites(row, 'payment_timeout', received, now);
       Object.assign(row, writes);
       return { kind: 'expired', refundRequested: writes.refund !== 'none' };
     }
-    if (row.status === 'expired' || paymentExpired(row, now)) {
-      const writes = expiryWrites(row, 'payment_timeout', received, now);
+    if (row.moderation !== 'approved') {
+      if (!received) return { kind: 'not_approved', moderation: row.moderation };
+      const writes = expiryWrites(row, moderationExpiryReason(row), received, now);
       Object.assign(row, writes);
       return { kind: 'expired', refundRequested: writes.refund !== 'none' };
     }

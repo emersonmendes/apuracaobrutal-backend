@@ -126,6 +126,69 @@ describe('PrismaSponsorshipRepository (integração) — specs/sponsorships AC-0
     });
   });
 
+  it('limpeza concorrente com a confirmação não devolve (nem apaga a imagem de) um pedido pago (FR-05)', async () => {
+    const o = await order('glove_blue', 1);
+    const deadline = o.paymentExpiresAt;
+    const justBefore = new Date(deadline.getTime() - 1);
+    let locked!: () => void;
+    let release!: () => void;
+    const lockedP = new Promise<void>((resolve) => (locked = resolve));
+    const released = new Promise<void>((resolve) => (release = resolve));
+    // Confirmação com o relógio do backend 1 ms antes do prazo, segurando a linha travada.
+    const confirming = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM sponsorship WHERE id = ${o.id}::uuid FOR UPDATE`;
+        locked();
+        await released;
+        return new PrismaSponsorshipRepository(prisma, tx).confirm(o.id, justBefore, FAR_ELECTION);
+      },
+      { timeout: 15_000 },
+    );
+    await lockedP;
+    // Worker com o relógio exatamente no prazo: a atualização bloqueia na linha travada…
+    const expiring = repository.expirePending(deadline);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    release();
+    const [confirmed, expired] = await Promise.all([confirming, expiring]);
+    // …e, ao reavaliar depois do commit, vê `scheduled` e deixa o pedido de fora.
+    expect(confirmed.kind).toBe('scheduled');
+    expect(expired.map((row) => row.id)).not.toContain(o.id);
+    expect(await repository.findById(o.id)).toMatchObject({
+      status: 'scheduled',
+      imageKey: `${o.id}.webp`,
+    });
+  });
+
+  it('vencido com moderação pendente → expired por prazo, não not_approved (R-9 antes de moderation R-7)', async () => {
+    const o = await order('side_left', 1);
+    await prisma.sponsorship.update({ where: { id: o.id }, data: { moderation: 'pending' } });
+    const after = new Date(T0.getTime() + 31 * 60_000);
+    expect(await repository.confirm(o.id, after, FAR_ELECTION)).toEqual({
+      kind: 'expired',
+      refundRequested: false,
+    });
+    expect(await repository.findById(o.id)).toMatchObject({
+      status: 'expired',
+      expiryReason: 'payment_timeout',
+      moderation: 'pending',
+    });
+
+    const paid = await order('side_left', 1);
+    await prisma.sponsorship.update({ where: { id: paid.id }, data: { moderation: 'pending' } });
+    expect(
+      await repository.confirm(paid.id, after, FAR_ELECTION, {
+        chargeId: paid.chargeId,
+        amountCents: paid.amountCents,
+        method: 'pix',
+      }),
+    ).toEqual({ kind: 'expired', refundRequested: true });
+    expect(await repository.findById(paid.id)).toMatchObject({
+      expiryReason: 'payment_timeout',
+      refund: 'requested',
+      moderation: 'pending',
+    });
+  });
+
   it('scheduleWindow e queueEnds leem só os scheduled', async () => {
     const o = await order('side_right', 3, T0);
     await repository.confirm(o.id, T0, FAR_ELECTION);
@@ -133,6 +196,7 @@ describe('PrismaSponsorshipRepository (integração) — specs/sponsorships AC-0
     expect(items).toContainEqual({
       id: o.id,
       slot: 'side_right',
+      linkUrl: null,
       startsAt: T0,
       endsAt: new Date(T0.getTime() + 3 * 60_000),
     });

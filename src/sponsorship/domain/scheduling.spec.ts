@@ -1,6 +1,7 @@
 import {
   confirmationTierMatches,
   effectiveStatus,
+  expiredByDeadline,
   newPendingOrder,
   schedule,
   startsInMinutes,
@@ -67,6 +68,26 @@ describe('agendamento — spec sponsorships R-4, R-5, R-6 (AC-05, AC-06)', () =>
     expect(effectiveStatus({ status: 'scheduled', paymentExpiresAt }, at('2027-01-01'))).toBe(
       'scheduled',
     );
+  });
+});
+
+describe('expiredByDeadline — R-9 antes do gate de moderação (sponsorship-image-moderation R-7)', () => {
+  const paymentExpiresAt = at('2026-10-25T23:30:00.000Z');
+  const pending = { status: 'pending_payment' as const, paymentExpiresAt };
+
+  it('prazo vencido vence a moderação pendente; dentro do prazo não', () => {
+    expect(expiredByDeadline({ ...pending, moderation: 'pending' }, paymentExpiresAt)).toBe(true);
+    expect(expiredByDeadline({ ...pending, moderation: 'approved' }, paymentExpiresAt)).toBe(true);
+    expect(expiredByDeadline({ ...pending, moderation: 'pending' }, t)).toBe(false);
+    expect(expiredByDeadline({ ...pending, moderation: 'approved' }, t)).toBe(false);
+  });
+
+  it('já expired por prazo conta; recusa/erro de moderação respondem pelo próprio motivo', () => {
+    const expired = { status: 'expired' as const, paymentExpiresAt };
+    expect(expiredByDeadline({ ...expired, moderation: 'pending' }, t)).toBe(true);
+    expect(expiredByDeadline({ ...expired, moderation: 'approved' }, t)).toBe(true);
+    expect(expiredByDeadline({ ...expired, moderation: 'rejected' }, paymentExpiresAt)).toBe(false);
+    expect(expiredByDeadline({ ...expired, moderation: 'error' }, paymentExpiresAt)).toBe(false);
   });
 });
 

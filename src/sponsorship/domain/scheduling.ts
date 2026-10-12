@@ -108,6 +108,19 @@ export function paymentExpired(order: Pick<Sponsorship, 'paymentExpiresAt'>, now
   return now.getTime() >= order.paymentExpiresAt.getTime();
 }
 
+/**
+ * Vencido por prazo na confirmação (R-9): já `expired` sem motivo de moderação, ou prazo de
+ * pagamento passado. Tem precedência sobre `moderation = pending`; recusa/erro de moderação já
+ * expiraram o pedido e respondem pelo próprio motivo (sponsorship-image-moderation R-7).
+ */
+export function expiredByDeadline(
+  order: Pick<Sponsorship, 'status' | 'paymentExpiresAt' | 'moderation'>,
+  now: Date,
+): boolean {
+  if (order.moderation === 'rejected' || order.moderation === 'error') return false;
+  return order.status === 'expired' || paymentExpired(order, now);
+}
+
 /** Status visto de fora: um pendente vencido já é `expired` (R-4). */
 export function effectiveStatus(
   order: Pick<Sponsorship, 'status' | 'paymentExpiresAt'>,
