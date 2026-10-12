@@ -199,7 +199,7 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
     it('GET devolve o pedido com o valor congelado na criação (AC-05)', async () => {
       const { id } = await createOrder({ slot: 'floor', minutes: '1' });
       const res = await request(f.app.getHttpServer()).get(`/sponsorships/${id}`).expect(200);
-      expect(res.body.amountCents).toBe(500_000);
+      expect(res.body.amountCents).toBe(400_000);
     });
   });
 
@@ -561,12 +561,12 @@ describe('Sponsorships — preço por período (e2e) — specs/sponsorship-elect
     // 23:50 + 20 min cruza a 00:00 → pedido inteiro no preço cheio.
     expect(res.body).toMatchObject({
       priceTier: 'election_day',
-      unitPriceCents: 500_000,
-      amountCents: 20 * 500_000,
+      unitPriceCents: 400_000,
+      amountCents: 20 * 400_000,
     });
     expect(f.repository.rows.get(res.body.id)).toMatchObject({
       priceTier: 'election_day',
-      amountCents: 20 * 500_000,
+      amountCents: 20 * 400_000,
     });
   });
 

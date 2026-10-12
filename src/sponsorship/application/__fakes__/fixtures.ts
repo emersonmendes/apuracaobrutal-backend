@@ -23,8 +23,8 @@ export function testConfig(overrides: Partial<SponsorshipConfig> = {}): Sponsors
     gateway: 'simulated',
     asaas: null,
     production: false,
-    pricesCents: { floor: 500_000, center: 300_000, glove: 200_000, side: 100_000 },
-    standardPricesCents: { floor: 2_500, center: 1_500, glove: 1_000, side: 500 },
+    pricesCents: { floor: 400_000, center: 300_000, glove: 200_000, side: 100_000 },
+    standardPricesCents: { floor: 2_000, center: 1_500, glove: 1_000, side: 500 },
     electionDay: {
       date: '2026-10-25',
       startsAt: new Date('2026-10-25T03:00:00.000Z'),

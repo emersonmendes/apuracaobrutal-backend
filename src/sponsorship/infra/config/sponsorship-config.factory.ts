@@ -222,7 +222,7 @@ export function parseSponsorshipConfig(env: Env): SponsorshipConfig {
   const asaas = gateway === 'asaas' ? parseAsaasConfig(env, problems) : null;
 
   const pricesCents = {
-    floor: integer(env, 'SPONSORSHIP_PRICE_FLOOR_CENTS', 500_000, 1, problems),
+    floor: integer(env, 'SPONSORSHIP_PRICE_FLOOR_CENTS', 400_000, 1, problems),
     center: integer(env, 'SPONSORSHIP_PRICE_CENTER_CENTS', 300_000, 1, problems),
     glove: integer(env, 'SPONSORSHIP_PRICE_GLOVE_CENTS', 200_000, 1, problems),
     side: integer(env, 'SPONSORSHIP_PRICE_SIDE_CENTS', 100_000, 1, problems),

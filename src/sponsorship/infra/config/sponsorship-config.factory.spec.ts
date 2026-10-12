@@ -32,8 +32,8 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
       gateway: 'simulated',
       asaas: null,
       production: false,
-      pricesCents: { floor: 500_000, center: 300_000, glove: 200_000, side: 100_000 },
-      standardPricesCents: { floor: 2_500, center: 1_500, glove: 1_000, side: 500 },
+      pricesCents: { floor: 400_000, center: 300_000, glove: 200_000, side: 100_000 },
+      standardPricesCents: { floor: 2_000, center: 1_500, glove: 1_000, side: 500 },
       electionDay: {
         date: '2026-10-25',
         startsAt: new Date('2026-10-25T03:00:00.000Z'),
@@ -266,7 +266,7 @@ describe('parseSponsorshipConfig — spec sponsorships FR-01 (AC-01)', () => {
         SPONSORSHIP_STANDARD_PRICE_SIDE_CENTS: '1000',
       });
       expect(config.standardPricesCents).toEqual({
-        floor: 2_500,
+        floor: 2_000,
         center: 1_500,
         glove: 1_000,
         side: 1_000,

@@ -379,7 +379,7 @@ describe('preço por período — spec sponsorship-election-pricing R-3–R-5', 
       ['side_left', 500, 100_000, 'standard'],
       ['side_right', 500, 100_000, 'standard'],
       ['center', 1_500, 300_000, 'standard'],
-      ['floor', 2_500, 500_000, 'standard'],
+      ['floor', 2_000, 400_000, 'standard'],
       ['glove_red', 1_000, 200_000, 'standard'],
       ['glove_blue', 1_000, 200_000, 'standard'],
     ]);

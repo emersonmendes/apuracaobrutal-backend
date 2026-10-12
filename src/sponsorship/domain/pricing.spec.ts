@@ -1,12 +1,12 @@
 import { priceTierOf, quote, standardTable } from './pricing';
 
-const pricesCents = { floor: 500_000, center: 300_000, glove: 200_000, side: 100_000 };
+const pricesCents = { floor: 400_000, center: 300_000, glove: 200_000, side: 100_000 };
 const standardPricesCents = standardTable(pricesCents, 500);
 const config = { pricesCents, standardPricesCents };
 
 describe('quote — spec sponsorships R-3 + sponsorship-election-pricing R-2 (AC-01)', () => {
   it.each([
-    ['floor', 3, 500_000, 1_500_000],
+    ['floor', 3, 400_000, 1_200_000],
     ['center', 1, 300_000, 300_000],
     ['glove_red', 2, 200_000, 400_000],
     ['glove_blue', 2, 200_000, 400_000],
@@ -21,7 +21,7 @@ describe('quote — spec sponsorships R-3 + sponsorship-election-pricing R-2 (AC
   });
 
   it.each([
-    ['floor', 3, 2_500, 7_500],
+    ['floor', 3, 2_000, 6_000],
     ['center', 1, 1_500, 1_500],
     ['glove_red', 2, 1_000, 2_000],
     ['glove_blue', 2, 1_000, 2_000],
@@ -37,8 +37,8 @@ describe('quote — spec sponsorships R-3 + sponsorship-election-pricing R-2 (AC
 });
 
 describe('standardTable — R-2 (AC-01)', () => {
-  it('padrões: laterais 500, luvas 1000, centro 1500, chão 2500', () => {
-    expect(standardPricesCents).toEqual({ floor: 2_500, center: 1_500, glove: 1_000, side: 500 });
+  it('padrões: laterais 500, luvas 1000, centro 1500, chão 2000', () => {
+    expect(standardPricesCents).toEqual({ floor: 2_000, center: 1_500, glove: 1_000, side: 500 });
   });
 
   it('mantém a proporção e arredonda meio centavo para cima', () => {
