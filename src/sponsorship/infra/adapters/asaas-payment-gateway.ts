@@ -45,7 +45,7 @@ export class AsaasPaymentGateway implements PaymentGateway {
   }
 
   async createCharge(args: CreateChargeArgs): Promise<CreatedCharge> {
-    const customerId = await this.findOrCreateCustomer(args);
+    const customerId = await this.createCustomer(args);
     const payment = await this.request('POST', '/payments', {
       customer: customerId,
       billingType: 'UNDEFINED',
@@ -102,21 +102,10 @@ export class AsaasPaymentGateway implements PaymentGateway {
   }
 
   /**
-   * Reutiliza o cliente com o mesmo CPF/CNPJ, atualizando nome e e-mail com os do pedido atual;
-   * senão cria (asaas-payment R-3).
+   * Cria um cliente por pedido (asaas-payment R-3): o nome pertence ao cliente no Asaas, então
+   * reutilizar/atualizar um cliente com o mesmo CPF/CNPJ trocaria o nome das cobranças anteriores.
    */
-  private async findOrCreateCustomer(args: CreateChargeArgs): Promise<string> {
-    const query = `cpfCnpj=${encodeURIComponent(args.payer.cpfCnpj)}&limit=1`;
-    const found = await this.request('GET', `/customers?${query}`);
-    const first = Array.isArray(found.data) ? found.data[0] : undefined;
-    if (isObject(first) && typeof first.id === 'string') {
-      await this.request('PUT', `/customers/${encodeURIComponent(first.id)}`, {
-        name: args.payer.name,
-        email: args.payer.email,
-      });
-      return first.id;
-    }
-
+  private async createCustomer(args: CreateChargeArgs): Promise<string> {
     const created = await this.request('POST', '/customers', {
       name: args.payer.name,
       cpfCnpj: args.payer.cpfCnpj,

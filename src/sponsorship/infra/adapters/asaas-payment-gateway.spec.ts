@@ -45,7 +45,6 @@ const args = {
 describe('AsaasPaymentGateway — spec asaas-payment R-3, R-4, R-7, R-8 (AC-12)', () => {
   it('cria cliente e cobrança UNDEFINED com valor em reais, autenticado pela chave', async () => {
     const { fn, calls } = fakeFetch({
-      [`GET /customers?cpfCnpj=${TEST_CPF}&limit=1`]: { body: { data: [] } },
       'POST /customers': { body: { id: 'cus_1' } },
       'POST /payments': { body: { id: 'pay_1', invoiceUrl: 'https://sandbox.asaas.com/i/1' } },
     });
@@ -57,19 +56,18 @@ describe('AsaasPaymentGateway — spec asaas-payment R-3, R-4, R-7, R-8 (AC-12)'
       invoiceUrl: 'https://sandbox.asaas.com/i/1',
     });
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
-      `GET https://api-sandbox.asaas.com/v3/customers?cpfCnpj=${TEST_CPF}&limit=1`,
       'POST https://api-sandbox.asaas.com/v3/customers',
       'POST https://api-sandbox.asaas.com/v3/payments',
     ]);
     expect(calls[0].headers.access_token).toBe('$aact_test_key');
-    expect(calls[1].body).toEqual({
+    expect(calls[0].body).toEqual({
       name: 'Padaria Central',
       cpfCnpj: TEST_CPF,
       email: 'contato@padaria.com.br',
       notificationDisabled: true,
       externalReference: args.sponsorshipId,
     });
-    expect(calls[2].body).toEqual({
+    expect(calls[1].body).toEqual({
       customer: 'cus_1',
       billingType: 'UNDEFINED',
       value: 129.9,
@@ -79,36 +77,17 @@ describe('AsaasPaymentGateway — spec asaas-payment R-3, R-4, R-7, R-8 (AC-12)'
     });
   });
 
-  it('reutiliza o cliente existente com o mesmo CPF/CNPJ, atualizando nome e e-mail do pedido', async () => {
+  it('cria um cliente novo a cada pedido, sem reutilizar nem atualizar o do mesmo CPF/CNPJ', async () => {
     const { fn, calls } = fakeFetch({
-      [`GET /customers?cpfCnpj=${TEST_CPF}&limit=1`]: { body: { data: [{ id: 'cus_old' }] } },
-      'PUT /customers/cus_old': { body: { id: 'cus_old' } },
+      'POST /customers': { body: { id: 'cus_new' } },
       'POST /payments': { body: { id: 'pay_2' } },
     });
     const created = await new AsaasPaymentGateway(asaasConfig(), fn).createCharge(args);
-    expect(created).toEqual({ chargeId: 'pay_2', customerId: 'cus_old', invoiceUrl: null });
+    expect(created).toEqual({ chargeId: 'pay_2', customerId: 'cus_new', invoiceUrl: null });
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
-      `GET https://api-sandbox.asaas.com/v3/customers?cpfCnpj=${TEST_CPF}&limit=1`,
-      'PUT https://api-sandbox.asaas.com/v3/customers/cus_old',
+      'POST https://api-sandbox.asaas.com/v3/customers',
       'POST https://api-sandbox.asaas.com/v3/payments',
     ]);
-    expect(calls[1].body).toEqual({ name: 'Padaria Central', email: 'contato@padaria.com.br' });
-    expect(calls[1].headers.access_token).toBe(asaasConfig().apiKey);
-  });
-
-  it('falha ao atualizar o cliente reencontrado vira GatewayError sem criar cobrança', async () => {
-    const { fn, calls } = fakeFetch({
-      [`GET /customers?cpfCnpj=${TEST_CPF}&limit=1`]: { body: { data: [{ id: 'cus_old' }] } },
-      'PUT /customers/cus_old': { status: 400, body: { errors: [{ code: 'invalid_email' }] } },
-      'POST /payments': { body: { id: 'pay_2' } },
-    });
-    const error = await new AsaasPaymentGateway(asaasConfig(), fn)
-      .createCharge(args)
-      .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(GatewayError);
-    expect((error as Error).message).toContain('PUT /customers/cus_old');
-    expect((error as Error).message).not.toContain(TEST_CPF);
-    expect(calls.map((call) => call.method)).toEqual(['GET', 'PUT']);
   });
 
   it('usa a URL base de produção quando configurado', async () => {
@@ -194,16 +173,16 @@ describe('AsaasPaymentGateway — spec asaas-payment R-3, R-4, R-7, R-8 (AC-12)'
     expect((error as Error).message).not.toContain('chave inválida');
   });
 
-  it('erro na busca do cliente não leva o CPF/CNPJ na mensagem (A-1, R-2)', async () => {
+  it('erro ao criar o cliente não leva o CPF/CNPJ na mensagem (A-1, R-2)', async () => {
     const { fn } = fakeFetch({
-      [`GET /customers?cpfCnpj=${TEST_CPF}&limit=1`]: { status: 500, body: {} },
+      'POST /customers': { status: 500, body: {} },
     });
     const error = await new AsaasPaymentGateway(asaasConfig(), fn)
       .createCharge(args)
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(GatewayError);
     expect((error as Error).message).not.toContain(TEST_CPF);
-    expect((error as Error).message).toContain('GET /customers');
+    expect((error as Error).message).toContain('POST /customers');
   });
 
   it('timeout ou rede fora viram GatewayError', async () => {

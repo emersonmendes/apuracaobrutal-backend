@@ -107,6 +107,11 @@ export class PrismaSponsorshipRepository implements SponsorshipRepository {
         return { kind: 'expired', refundRequested: writes.refund !== 'none' } as const;
       }
 
+      // A leitura abaixo precisa ver o `endsAt` que a confirmação anterior do mesmo local acabou
+      // de gravar: isso vale no isolamento padrão (`READ COMMITTED`), em que cada consulta enxerga
+      // o que foi comitado antes dela. Não configure `isolationLevel` nesta transação — com
+      // `REPEATABLE READ`/`SERIALIZABLE` o snapshot seria anterior ao lock e dois patrocínios se
+      // sobreporiam. O int-spec AC-07 (confirmações simultâneas) é a guarda.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`sponsorship:${row.slot}`}))`;
       const queue = await tx.sponsorship.aggregate({
         where: { slot: row.slot, status: 'scheduled' },
