@@ -1,4 +1,5 @@
 import { priceTierOf, quote, type PriceTier } from '../domain/pricing';
+import { availableMinutes, salesClosed, salesEndAtOf } from '../domain/sales-cutoff';
 import { schedule } from '../domain/scheduling';
 import { SPONSORSHIP_SLOTS, type SponsorshipSlot } from '../domain/slots';
 import {
@@ -19,18 +20,23 @@ export interface SponsorOffer {
   /** Gateway em uso e se alguma cobrança real acontece (asaas-payment R-1, R-9). */
   payment: { gateway: PaymentGatewayName; sandbox: boolean; methods: OfferPaymentMethod[] };
   electionDay: { date: string; startsAt: Date; endsAt: Date };
+  /** Fim das vendas e se já passou (sponsorship-sales-cutoff R-1, R-5). */
+  sales: { endsAt: Date; closed: boolean };
   slots: {
     slot: SponsorshipSlot;
     unitPriceCents: number;
     electionDayUnitPriceCents: number;
     priceTier: PriceTier;
     queueEndsAt: Date | null;
+    /** Minutos que ainda cabem no local antes do fim das vendas (sponsorship-sales-cutoff R-2). */
+    availableMinutes: number;
   }[];
 }
 
 /**
- * Oferta: preço/min (na faixa atual), preço do dia da eleição e fim da fila de cada local, na
- * ordem da R-1 (FR-03, R-6, R-9; sponsorship-election-pricing FR-03).
+ * Oferta: preço/min (na faixa atual), preço do dia da eleição, fim da fila e minutos disponíveis
+ * de cada local, na ordem da R-1 (FR-03, R-6, R-9; sponsorship-election-pricing FR-03;
+ * sponsorship-sales-cutoff FR-03).
  */
 export class GetOffer {
   constructor(
@@ -42,8 +48,10 @@ export class GetOffer {
   async execute(): Promise<SponsorOffer> {
     const now = this.clock.now();
     const queueEnds = await this.repository.queueEnds();
+    const salesEndAt = salesEndAtOf(this.config.electionDay);
+    const closed = salesClosed(now, salesEndAt);
     return {
-      available: purchaseAvailable(this.config),
+      available: purchaseAvailable(this.config) && !closed,
       maxMinutes: this.config.maxMinutes,
       serverTime: now,
       payment: {
@@ -52,6 +60,7 @@ export class GetOffer {
         methods: this.config.gateway === 'asaas' ? ['pix', 'credit_card'] : ['simulated'],
       },
       electionDay: this.config.electionDay,
+      sales: { endsAt: salesEndAt, closed },
       slots: SPONSORSHIP_SLOTS.map((slot) => {
         const end = queueEnds[slot];
         // Pedido de 1 minuto começando na previsão atual do local (sponsorship-election-pricing R-4).
@@ -62,6 +71,7 @@ export class GetOffer {
           electionDayUnitPriceCents: quote(slot, 1, 'election_day', this.config).unitPriceCents,
           priceTier: tier,
           queueEndsAt: end && end.getTime() > now.getTime() ? end : null,
+          availableMinutes: availableMinutes(now, end ?? null, salesEndAt, this.config.maxMinutes),
         };
       }),
     };

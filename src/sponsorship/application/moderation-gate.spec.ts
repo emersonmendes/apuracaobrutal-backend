@@ -55,7 +55,7 @@ function setup(gatewayName: 'simulated' | 'asaas' = 'simulated') {
     reconcile,
     get: new GetSponsorship(repository, clock, config, reconcile),
     instructions: new GetPaymentInstructions(repository, gateway, clock, config),
-    schedule: new GetSchedule(repository, clock),
+    schedule: new GetSchedule(repository, clock, config),
     image: new ReadSponsorImage(repository, storage, logger),
     webhook: new HandleAsaasWebhook(repository, confirm, clock),
   };

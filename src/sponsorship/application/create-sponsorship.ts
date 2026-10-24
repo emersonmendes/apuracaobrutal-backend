@@ -8,6 +8,7 @@ import {
 } from '../domain/image-rules';
 import { localDateOf } from '../domain/local-date';
 import { priceTierOf, quote } from '../domain/pricing';
+import { exceedsSalesEnd, salesClosed, salesEndAtOf } from '../domain/sales-cutoff';
 import { newPendingOrder, schedule } from '../domain/scheduling';
 import { purchaseAvailable, type SponsorshipConfig } from '../domain/sponsorship-config';
 import { validateOrderInput, type RawOrderInput } from '../domain/validation';
@@ -18,7 +19,11 @@ import type { SponsorImageStorage } from '../domain/ports/sponsor-image-storage'
 import type { SponsorshipRepository } from '../domain/ports/sponsorship-repository';
 import { toPublic, type PublicSponsorship } from './public-sponsorship';
 
-/** Cria o pedido `pending_payment` (spec sponsorships FR-04, Fluxo 2). */
+/**
+ * Cria o pedido `pending_payment` (spec sponsorships FR-04, Fluxo 2). Recusa antes de qualquer
+ * escrita quando a venda está encerrada ou a janela prevista passa do fim do dia da eleição
+ * (sponsorship-sales-cutoff R-3, R-5).
+ */
 export class CreateSponsorship {
   constructor(
     private readonly repository: SponsorshipRepository,
@@ -32,6 +37,9 @@ export class CreateSponsorship {
 
   async execute(raw: RawOrderInput, image: Buffer | undefined): Promise<PublicSponsorship> {
     if (!purchaseAvailable(this.config)) throw new SponsorshipError('unavailable');
+    const now = this.clock.now();
+    const salesEndAt = salesEndAtOf(this.config.electionDay);
+    if (salesClosed(now, salesEndAt)) throw new SponsorshipError('sales_closed');
 
     const validation = validateOrderInput(raw, this.config.maxMinutes);
     if (!validation.ok) throw new SponsorshipError(validation.code);
@@ -43,6 +51,16 @@ export class CreateSponsorship {
     if (!size || !dimensionsAllowed(size.width, size.height)) {
       throw new SponsorshipError('invalid_image');
     }
+
+    // Preço só do backend: janela prevista pela fila atual do local → faixa → cotação
+    // (sponsorship-election-pricing R-4). Nenhum campo de preço vem do cliente. A mesma janela
+    // decide o corte antes de guardar a imagem ou criar a cobrança (sponsorship-sales-cutoff R-3).
+    const queueEnd = (await this.repository.queueEnds())[input.slot] ?? null;
+    const predicted = schedule(now, input.minutes, queueEnd);
+    if (exceedsSalesEnd(predicted, salesEndAt)) throw new SponsorshipError('exceeds_sales_end');
+    const tier = priceTierOf(predicted, this.config.electionDay);
+    const price = quote(input.slot, input.minutes, tier, this.config);
+
     let webp: Buffer;
     try {
       webp = await this.images.toWebp(image, OUTPUT_MAX_SIDE_PX);
@@ -56,13 +74,6 @@ export class CreateSponsorship {
     const imageSha256 = sha256Hex(webp);
     await this.storage.save(imageKey, webp);
     try {
-      // Preço só do backend: janela prevista pela fila atual do local → faixa → cotação
-      // (sponsorship-election-pricing R-4). Nenhum campo de preço vem do cliente.
-      const now = this.clock.now();
-      const queueEnd = (await this.repository.queueEnds())[input.slot] ?? null;
-      const predicted = schedule(now, input.minutes, queueEnd);
-      const tier = priceTierOf(predicted, this.config.electionDay);
-      const price = quote(input.slot, input.minutes, tier, this.config);
       // Cobrança no gateway antes de gravar (asaas-payment R-3): vence na data civil do prazo de
       // pagamento; o pagador vai só para o gateway, nunca para respostas.
       const paymentExpiresAt = new Date(now.getTime() + this.config.paymentTtlMinutes * 60_000);

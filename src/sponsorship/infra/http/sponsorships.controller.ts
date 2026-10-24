@@ -87,10 +87,11 @@ export class SponsorshipsController {
   })
   @ApiResponse({ status: 200, type: SponsorScheduleDto })
   async schedule(@Req() req: Request) {
-    const { serverTime, items } = await this.getSchedule.execute();
+    const { serverTime, salesEndAt, items } = await this.getSchedule.execute();
     const base = `${req.protocol}://${req.get('host')}`;
     return {
       serverTime,
+      salesEndAt,
       items: items.map((item) => ({
         slot: item.slot,
         sponsorshipId: item.id,
@@ -115,7 +116,17 @@ export class SponsorshipsController {
   @ApiConsumes('multipart/form-data')
   @ApiBody({ type: CreateSponsorshipBodyDto })
   @ApiResponse({ status: 201, type: PublicSponsorshipDto })
-  @ApiResponse({ status: 400, type: SponsorshipErrorDto, description: 'Campo ou imagem inválidos' })
+  @ApiResponse({
+    status: 400,
+    type: SponsorshipErrorDto,
+    description:
+      'Campo ou imagem inválidos; exceeds_sales_end: o tempo escolhido passa do fim das vendas',
+  })
+  @ApiResponse({
+    status: 409,
+    type: SponsorshipErrorDto,
+    description: 'sales_closed: vendas encerradas (fim do dia da eleição)',
+  })
   @ApiResponse({ status: 429, description: 'Limite de pedidos por IP atingido' })
   @ApiResponse({
     status: 502,
@@ -132,14 +143,16 @@ export class SponsorshipsController {
     @Body() body: MultipartFields,
     @UploadedFile() image: Express.Multer.File | undefined,
   ): Promise<PublicSponsorship> {
+    // Sem multipart o Express 5 não preenche `body`; o domínio responde pela ordem da FR-03.
+    const fields: MultipartFields = body ?? {};
     const raw: RawOrderInput = {
-      slot: body.slot,
-      minutes: body.minutes,
-      advertiserName: body.advertiserName,
-      email: body.email,
-      cpfCnpj: body.cpfCnpj,
-      linkUrl: body.linkUrl,
-      acceptTerms: body.acceptTerms,
+      slot: fields.slot,
+      minutes: fields.minutes,
+      advertiserName: fields.advertiserName,
+      email: fields.email,
+      cpfCnpj: fields.cpfCnpj,
+      linkUrl: fields.linkUrl,
+      acceptTerms: fields.acceptTerms,
     };
     return this.createSponsorship.execute(raw, image?.buffer);
   }

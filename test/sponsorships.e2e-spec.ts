@@ -253,6 +253,7 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
         .set('Origin', ORIGIN)
         .expect(200);
       expect(res.body.serverTime).toBe('2026-10-25T23:00:00.000Z');
+      expect(res.body.salesEndAt).toBe('2026-10-26T03:00:00.000Z');
       expect(res.body.items.map((item: { sponsorshipId: string }) => item.sponsorshipId)).toEqual([
         a.id,
         linked.id,
@@ -293,12 +294,14 @@ describe('Sponsorships (e2e) — specs/sponsorships', () => {
         electionDayUnitPriceCents: 100_000,
         priceTier: 'election_day',
         queueEndsAt: null,
+        availableMinutes: 60,
       });
       expect(res.body.electionDay).toEqual({
         date: '2026-10-25',
         startsAt: '2026-10-25T03:00:00.000Z',
         endsAt: '2026-10-26T03:00:00.000Z',
       });
+      expect(res.body.sales).toEqual({ endsAt: '2026-10-26T03:00:00.000Z', closed: false });
     });
   });
 
@@ -601,6 +604,102 @@ describe('Sponsorships — preço por período (e2e) — specs/sponsorship-elect
     expect(schemas.PublicSponsorshipDto.properties).toHaveProperty('linkUrl');
     expect(schemas.ScheduleItemDto.properties).toHaveProperty('linkUrl');
     expect(schemas.CreateSponsorshipBodyDto.properties).toHaveProperty('linkUrl');
+  });
+});
+
+describe('Sponsorships — fim das vendas (e2e) — specs/sponsorship-sales-cutoff', () => {
+  let f: Fixture;
+  let png: Buffer;
+  const SALES_END = '2026-10-26T03:00:00.000Z'; // 00:00 de 26/10 em São Paulo
+  const LAST_HALF = new Date('2026-10-26T02:30:00.000Z'); // 23:30 do dia da eleição
+
+  const post = (fields: Record<string, string>, withImage = true) => {
+    const req = request(f.app.getHttpServer())
+      .post('/sponsorships')
+      .field({
+        slot: 'side_left',
+        minutes: '2',
+        advertiserName: NAME,
+        email: EMAIL,
+        cpfCnpj: CPF,
+        acceptTerms: 'true',
+        ...fields,
+      });
+    return withImage ? req.attach('image', png, 'logo.png') : req;
+  };
+
+  beforeAll(async () => {
+    Logger.overrideLogger(false);
+    png = await solid(200, 200).png().toBuffer();
+    f = await createApp(testConfig({ createLimitPerHour: 1000 }));
+  });
+
+  afterAll(async () => {
+    await f.app.close();
+  });
+
+  it('oferta informa o corte e os minutos que cabem por local (AC-02)', async () => {
+    f.clock.current = LAST_HALF;
+    const res = await request(f.app.getHttpServer()).get('/sponsorships/offer').expect(200);
+    expect(res.body.available).toBe(true);
+    expect(res.body.sales).toEqual({ endsAt: SALES_END, closed: false });
+    expect(
+      res.body.slots.every((s: { availableMinutes: number }) => s.availableMinutes === 30),
+    ).toBe(true);
+  });
+
+  it('janela no limite exato → 201; um minuto a mais → 400 exceeds_sales_end sem pedido (AC-03)', async () => {
+    f.clock.current = LAST_HALF;
+    const rows = f.repository.rows.size;
+    const files = f.storage.files.size;
+    const ok = await post({ slot: 'center', minutes: '30' }).expect(201);
+    const res = await post({ slot: 'floor', minutes: '31' }).expect(400);
+    expect(res.body).toEqual({ code: 'exceeds_sales_end' });
+    expect(f.repository.rows.size).toBe(rows + 1);
+    expect(f.storage.files.size).toBe(files + 1);
+    // Pago, a fila do centro vai até o corte: qualquer minuto a mais passa.
+    await request(f.app.getHttpServer())
+      .post(`/sponsorships/${ok.body.id}/simulated-payment`)
+      .expect(200);
+    expect((await post({ slot: 'center', minutes: '1' }).expect(400)).body).toEqual({
+      code: 'exceeds_sales_end',
+    });
+    expect(
+      (await request(f.app.getHttpServer()).get('/sponsorships/offer').expect(200)).body.slots.find(
+        (s: { slot: string }) => s.slot === 'center',
+      ).availableMinutes,
+    ).toBe(0);
+  });
+
+  it('após o corte: oferta fechada, POST → 409 sales_closed (inclusive vazio), agenda segue (AC-04, AC-07)', async () => {
+    f.clock.current = new Date(SALES_END);
+    const offer = await request(f.app.getHttpServer()).get('/sponsorships/offer').expect(200);
+    expect(offer.body).toMatchObject({
+      available: false,
+      sales: { endsAt: SALES_END, closed: true },
+    });
+    expect((await post({}).expect(409)).body).toEqual({ code: 'sales_closed' });
+    expect((await request(f.app.getHttpServer()).post('/sponsorships').expect(409)).body).toEqual({
+      code: 'sales_closed',
+    });
+    const schedule = await request(f.app.getHttpServer()).get('/sponsorships/schedule').expect(200);
+    expect(schedule.body.salesEndAt).toBe(SALES_END);
+  });
+
+  it('documento OpenAPI traz sales, availableMinutes, salesEndAt e os dois códigos (AC-02, AC-07)', () => {
+    const doc = createSwaggerDocument(f.app) as unknown as {
+      paths: Record<string, { post?: { responses: Record<string, unknown> } }>;
+      components: { schemas: Record<string, { properties: Record<string, { enum?: string[] }> }> };
+    };
+    const schemas = doc.components.schemas;
+    expect(schemas.SponsorOfferDto.properties).toHaveProperty('sales');
+    expect(schemas.OfferSalesDto.properties).toHaveProperty('closed');
+    expect(schemas.OfferSlotDto.properties).toHaveProperty('availableMinutes');
+    expect(schemas.SponsorScheduleDto.properties).toHaveProperty('salesEndAt');
+    expect(schemas.SponsorshipErrorDto.properties.code.enum).toEqual(
+      expect.arrayContaining(['sales_closed', 'exceeds_sales_end']),
+    );
+    expect(doc.paths['/sponsorships'].post?.responses).toHaveProperty('409');
   });
 });
 

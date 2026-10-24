@@ -10,6 +10,7 @@ import { GatewayError, SponsorshipError, StorageError } from '../../domain/error
 
 const STATUS: Record<string, number> = {
   unavailable: 503,
+  sales_closed: 409,
   not_found: 404,
   expired: 409,
   price_changed: 409,
@@ -23,8 +24,8 @@ const STATUS: Record<string, number> = {
 
 /**
  * Traduz erros do domínio para HTTP (spec sponsorships FR-03; asaas-payment FR-03): validação →
- * 400 `{ code }`, `unavailable` → 503, `not_found` → 404, `expired`/`price_changed`/`already_paid`
- * → 409, `moderation_*` (pedido não aprovado na moderação; sponsorship-image-moderation R-7) →
+ * 400 `{ code }` (inclusive `exceeds_sales_end`, sponsorship-sales-cutoff FR-03), `unavailable` →
+ * 503, `not_found` → 404, `expired`/`price_changed`/`already_paid`/`sales_closed` → 409, `moderation_*` (pedido não aprovado na moderação; sponsorship-image-moderation R-7) →
  * 409, falha do gateway → 502, falha do armazenamento de imagens → 503 (sponsorship-s3-storage
  * FR-04). O limite de tamanho do multer vira `400 image_too_large`.
  */

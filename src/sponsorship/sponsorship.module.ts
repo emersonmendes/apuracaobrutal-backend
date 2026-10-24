@@ -163,8 +163,9 @@ export const SPONSORSHIP_CORE_PROVIDERS = [
     },
     {
       provide: GetSchedule,
-      useFactory: (r: SponsorshipRepository, c: Clock) => new GetSchedule(r, c),
-      inject: [SPONSORSHIP_REPOSITORY, SPONSORSHIP_CLOCK],
+      useFactory: (r: SponsorshipRepository, c: Clock, cfg: SponsorshipConfig) =>
+        new GetSchedule(r, c, cfg),
+      inject: [SPONSORSHIP_REPOSITORY, SPONSORSHIP_CLOCK, SPONSORSHIP_CONFIG],
     },
     {
       provide: ReadSponsorImage,

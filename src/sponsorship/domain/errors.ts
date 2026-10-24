@@ -16,6 +16,8 @@ export class SponsorshipError extends Error {
     readonly code:
       | ValidationErrorCode
       | 'unavailable'
+      | 'sales_closed'
+      | 'exceeds_sales_end'
       | 'not_found'
       | 'expired'
       | 'price_changed'

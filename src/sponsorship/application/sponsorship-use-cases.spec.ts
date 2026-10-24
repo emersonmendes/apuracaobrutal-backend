@@ -63,7 +63,7 @@ function setup(
     reconcile,
     get: new GetSponsorship(repository, clock, config, reconcile),
     offer: new GetOffer(repository, clock, config),
-    schedule: new GetSchedule(repository, clock),
+    schedule: new GetSchedule(repository, clock, config),
     image: new ReadSponsorImage(repository, storage),
     instructions: new GetPaymentInstructions(repository, gateway, clock, config),
     webhook: new HandleAsaasWebhook(repository, confirm, clock),
@@ -278,6 +278,7 @@ describe('GetSponsorship / GetOffer / GetSchedule / ReadSponsorImage', () => {
       electionDayUnitPriceCents: 300_000,
       priceTier: 'election_day',
       queueEndsAt: new Date('2026-10-25T23:04:00.000Z'),
+      availableMinutes: 60,
     });
     expect(offer.slots.find((x) => x.slot === 'glove_red')?.unitPriceCents).toBe(
       offer.slots.find((x) => x.slot === 'glove_blue')?.unitPriceCents,
@@ -410,10 +411,12 @@ describe('preço por período — spec sponsorship-election-pricing R-3–R-5', 
     expect(s.gateway.charges).toMatchObject([{ sponsorshipId: created.id, amountCents: 1_000 }]);
   });
 
-  it('criação depois do dia volta à tabela reduzida', async () => {
+  it('depois do dia a oferta volta à tabela reduzida, mas a venda está encerrada (sales-cutoff R-5)', async () => {
     const s = setup();
     s.clock.current = AFTER;
-    expect((await s.create.execute(input(), PNG_HEADER)).priceTier).toBe('standard');
+    const offer = await s.offer.execute();
+    expect(offer.slots[0]).toMatchObject({ priceTier: 'standard', unitPriceCents: 500 });
+    expect(await codeOf(s.create.execute(input(), PNG_HEADER))).toBe('sales_closed');
   });
 
   it('janela prevista que cruza a 00:00 → pedido inteiro no preço cheio (AC-04)', async () => {
@@ -463,6 +466,108 @@ describe('preço por período — spec sponsorship-election-pricing R-3–R-5', 
     const order = await s.create.execute(input(), PNG_HEADER);
     s.clock.advance(5 * MIN);
     expect((await s.confirm.execute(order.id)).status).toBe('scheduled');
+  });
+});
+
+describe('fim das vendas — spec sponsorship-sales-cutoff R-1–R-5', () => {
+  // Fixtures: corte = fim do dia da eleição = 2026-10-26T03:00Z (00:00 de 26/10 em São Paulo).
+  const SALES_END = new Date('2026-10-26T03:00:00.000Z');
+  const LAST_HOUR = new Date('2026-10-26T02:00:00.000Z'); // 23:00 do dia da eleição
+  const LAST_HALF = new Date('2026-10-26T02:30:00.000Z'); // 23:30
+
+  it('oferta traz o corte e os minutos disponíveis por local, coerentes com a fila (AC-02)', async () => {
+    const s = setup();
+    s.clock.current = LAST_HOUR;
+    const { id } = await s.create.execute(input({ slot: 'floor', minutes: '50' }), PNG_HEADER);
+    await s.confirm.execute(id); // fila do chão até 23:50
+    const offer = await s.offer.execute();
+    expect(offer.available).toBe(true);
+    expect(offer.sales).toEqual({ endsAt: SALES_END, closed: false });
+    expect(offer.sales.endsAt).toEqual(offer.electionDay.endsAt);
+    expect(offer.slots.map(({ slot, availableMinutes }) => [slot, availableMinutes])).toEqual([
+      ['side_left', 60],
+      ['side_right', 60],
+      ['center', 60],
+      ['floor', 10],
+      ['glove_red', 60],
+      ['glove_blue', 60],
+    ]);
+    s.clock.current = LAST_HALF;
+    expect((await s.offer.execute()).slots[0].availableMinutes).toBe(30);
+  });
+
+  it('após o corte: oferta indisponível e fechada, zero minutos em todos os locais (AC-02)', async () => {
+    const s = setup();
+    s.clock.current = SALES_END;
+    const offer = await s.offer.execute();
+    expect(offer).toMatchObject({ available: false, sales: { closed: true } });
+    expect(offer.slots.every((x) => x.availableMinutes === 0)).toBe(true);
+  });
+
+  it('janela prevista terminando exatamente no corte é aceita; um minuto a mais é recusada sem escrever nada (AC-03)', async () => {
+    const s = setup();
+    s.clock.current = LAST_HALF;
+    const ok = await s.create.execute(input({ slot: 'center', minutes: '30' }), PNG_HEADER);
+    expect(ok.status).toBe('pending_payment');
+    const before = { files: s.storage.files.size, charges: s.gateway.charges.length };
+    expect(
+      await codeOf(s.create.execute(input({ slot: 'floor', minutes: '31' }), PNG_HEADER)),
+    ).toBe('exceeds_sales_end');
+    expect(s.storage.files.size).toBe(before.files);
+    expect(s.gateway.charges.length).toBe(before.charges);
+    expect(s.repository.rows.size).toBe(1);
+  });
+
+  it('fila que empurra a janela além do corte recusa mesmo com poucos minutos (AC-03)', async () => {
+    const s = setup();
+    s.clock.current = LAST_HOUR;
+    const { id } = await s.create.execute(input({ minutes: '55' }), PNG_HEADER);
+    await s.confirm.execute(id); // centro até 23:55
+    expect(await codeOf(s.create.execute(input({ minutes: '6' }), PNG_HEADER))).toBe(
+      'exceeds_sales_end',
+    );
+    expect((await s.create.execute(input({ minutes: '5' }), PNG_HEADER)).status).toBe(
+      'pending_payment',
+    );
+  });
+
+  it('venda encerrada recusa antes de validar campos (AC-04)', async () => {
+    const s = setup();
+    s.clock.current = SALES_END;
+    expect(await codeOf(s.create.execute({}, undefined))).toBe('sales_closed');
+    expect(await codeOf(s.create.execute(input(), PNG_HEADER))).toBe('sales_closed');
+  });
+
+  it('ordem dos erros: invalid_minutes e invalid_email vêm antes de exceeds_sales_end (AC-05)', async () => {
+    const s = setup();
+    s.clock.current = LAST_HALF;
+    expect(await codeOf(s.create.execute(input({ minutes: '0' }), PNG_HEADER))).toBe(
+      'invalid_minutes',
+    );
+    expect(await codeOf(s.create.execute(input({ minutes: '61' }), PNG_HEADER))).toBe(
+      'invalid_minutes',
+    );
+    expect(await codeOf(s.create.execute(input({ minutes: '45', email: 'x' }), PNG_HEADER))).toBe(
+      'invalid_email',
+    );
+    expect(await codeOf(s.create.execute(input({ minutes: '45' }), PNG_HEADER))).toBe(
+      'exceeds_sales_end',
+    );
+  });
+
+  it('confirmação não revalida o corte: janela real além do corte é agendada (AC-06, R-4)', async () => {
+    const s = setup();
+    s.clock.current = LAST_HALF;
+    const order = await s.create.execute(input({ minutes: '30' }), PNG_HEADER); // 23:30–00:00
+    s.clock.advance(10 * MIN); // paga 23:40 → 23:40–00:10
+    const confirmed = await s.confirm.execute(order.id);
+    expect(confirmed.status).toBe('scheduled');
+    expect(confirmed.endsAt?.getTime()).toBeGreaterThan(SALES_END.getTime());
+  });
+
+  it('agenda traz o fim das vendas (AC-07)', async () => {
+    const s = setup();
+    expect((await s.schedule.execute()).salesEndAt).toEqual(SALES_END);
   });
 });
 

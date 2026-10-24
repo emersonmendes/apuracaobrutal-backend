@@ -38,6 +38,21 @@ export class OfferSlotDto {
     description: 'Fim da fila do local (previsão); null se livre',
   })
   queueEndsAt!: string | null;
+  @ApiProperty({
+    description:
+      'Minutos que ainda cabem no local antes do fim das vendas (previsão); 0 = esgotado',
+    example: 60,
+  })
+  availableMinutes!: number;
+}
+
+export class OfferSalesDto {
+  @ApiProperty({
+    format: 'date-time',
+    description: 'Fim das vendas: 00:00 do dia seguinte à eleição',
+  })
+  endsAt!: string;
+  @ApiProperty({ description: 'true depois do fim das vendas' }) closed!: boolean;
 }
 
 export class ElectionDayDto {
@@ -56,11 +71,15 @@ export class OfferPaymentDto {
 }
 
 export class SponsorOfferDto {
-  @ApiProperty({ description: 'false com gateway simulado em produção' }) available!: boolean;
+  @ApiProperty({
+    description: 'false com gateway simulado em produção ou com as vendas encerradas',
+  })
+  available!: boolean;
   @ApiProperty({ example: 60 }) maxMinutes!: number;
   @ApiProperty({ format: 'date-time' }) serverTime!: string;
   @ApiProperty({ type: OfferPaymentDto }) payment!: OfferPaymentDto;
   @ApiProperty({ type: ElectionDayDto }) electionDay!: ElectionDayDto;
+  @ApiProperty({ type: OfferSalesDto }) sales!: OfferSalesDto;
   @ApiProperty({ type: [OfferSlotDto] }) slots!: OfferSlotDto[];
 }
 
@@ -169,6 +188,8 @@ export class ScheduleItemDto {
 
 export class SponsorScheduleDto {
   @ApiProperty({ format: 'date-time' }) serverTime!: string;
+  @ApiProperty({ format: 'date-time', description: 'Fim das vendas de patrocínio' })
+  salesEndAt!: string;
   @ApiProperty({ type: [ScheduleItemDto] }) items!: ScheduleItemDto[];
 }
 
@@ -186,6 +207,8 @@ export class SponsorshipErrorDto {
       'terms_not_accepted',
       'expired',
       'price_changed',
+      'sales_closed',
+      'exceeds_sales_end',
       'already_paid',
       'gateway_error',
       'storage_error',
